@@ -71,7 +71,7 @@ final class RuNum {
     /**
      * Distance for the milestone announcements and the summary.
      * 500 → «пятьсот метров», 1000 → «километр», 1500 → «полтора километра», 2000 → «два километра»,
-     * 2500 → «два с половиной километра», 5000 → «пять километров», 21500 → «двадцать один с половиной километра»,
+     * 2500 → «два с половиной километра», 5500 → «пять с половиной километров», 21500 → «двадцать один километр пятьсот метров»,
      * 2340 → «два километра триста сорок метров». The lone «километр» (1000 m) is how the milestone sounds on the radio.
      */
     static String distance(int m) {
@@ -79,7 +79,13 @@ final class RuNum {
         int km = m / 1000, rem = m % 1000;
         if (km == 0) return meters(rem);
         if (rem == 0) return km == 1 ? "километр" : kilometers(km);
-        if (rem == 500) return km == 1 ? "полтора километра" : words(km, G.M) + " с половиной километра";
+        // «с половиной»: the noun agrees with the whole number (Грамота, Розенталь): пять с половиной километров, два с половиной километра;
+        // after …один the construction is awkward, so it is spelled out: «двадцать один километр пятьсот метров»
+        if (rem == 500) {
+            if (km == 1) return "полтора километра";
+            if (km % 10 == 1 && km % 100 != 11) return kilometers(km) + " " + meters(rem);
+            return words(km, G.M) + " с половиной " + plural(km, "километр", "километра", "километров");
+        }
         return kilometers(km) + " " + meters(rem);
     }
 
