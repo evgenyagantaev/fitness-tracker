@@ -31,7 +31,8 @@
 
   /** Full HR session of a workout: before / run / recovery, x = minutes from the start. */
   function sessionChart(canvas, w) {
-    const D = w.duration_s, cut = w.tail_cut != null ? w.tail_cut : Infinity;
+    const [RS, D] = A.runBounds(w), cut = w.tail_cut != null ? w.tail_cut : Infinity;
+    const pauses = (w.seg && w.seg.pauses) || [];
     const ss = (w.session_samples || []).filter((p) => p[0] < cut);
     const mask = (w.quality && w.quality.mask) || [];
     const isM = (t) => mask.some((m) => t >= m[0] && t <= m[1]);
@@ -47,8 +48,10 @@
       options: { maintainAspectRatio: false, animation: false, parsing: false,
         plugins: { legend: { display: false }, ftZones: { zones: [
           { from: xmin, to: 0, color: 'rgba(150,150,150,.10)', label: 'до старта' },
-          { from: 0, to: D / 60, color: 'rgba(57,211,83,.08)', label: 'тренировка' },
-          { from: D / 60, to: xmax, color: 'rgba(63,167,255,.12)', label: 'восстановление' }]
+          ...(RS > 3 ? [{ from: 0, to: RS / 60, color: 'rgba(200,200,120,.12)', label: 'подход' }] : []),
+          { from: RS / 60, to: D / 60, color: 'rgba(57,211,83,.08)', label: 'бег' },
+          { from: D / 60, to: xmax, color: 'rgba(63,167,255,.12)', label: 'отход и восстановление' }]
+          .concat(pauses.map((m, i) => ({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,170,40,.28)', label: i === 0 ? 'пауза' : '', labelY: 40, labelColor: '#ffb020' })))
           .concat(mask.map((m, i) => ({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,60,60,.18)', label: i === 0 ? 'помехи' : '', labelY: 26, labelColor: '#ff8080' }))) } },
         scales: { x: { type: 'linear', min: xmin, max: xmax, title: { display: true, text: 'минуты от старта' } }, y: { suggestedMin: 50, suggestedMax: 180 } } },
     });
@@ -110,7 +113,7 @@
 
   async function refresh() {
     const list = await load();
-    items = list.map((x) => ({ x, r: A.recovery({ duration_s: x.duration_s, session_samples: x.curve, quality: x.quality, tail_cut: x.tail_cut, inherit: x.inherit }) }))
+    items = list.map((x) => ({ x, r: A.recovery({ duration_s: x.duration_s, seg: x.seg, session_samples: x.curve, quality: x.quality, tail_cut: x.tail_cut, inherit: x.inherit }) }))
       .filter((it) => it.r && it.r.hr_end != null && it.r.post_s >= 30)
       .sort((a, b) => b.x.started_at - a.x.started_at);
     $('recEmpty').classList.toggle('hidden', items.length > 0);
@@ -152,7 +155,7 @@
     const seq = ++hrvSeq;
     const rr = await rrOf(x);
     if (seq !== hrvSeq) return;
-    const h = rr.length ? A.hrv({ duration_s: x.duration_s, session_rr: rr, quality: x.quality, tail_cut: x.tail_cut, inherit: x.inherit }) : null;
+    const h = rr.length ? A.hrv({ duration_s: x.duration_s, seg: x.seg, session_rr: rr, quality: x.quality, tail_cut: x.tail_cut, inherit: x.inherit }) : null;
     $('recHrvNone').classList.toggle('hidden', !!h);
     $('recHrvBody').classList.toggle('hidden', !h);
     $('recHrvNote').textContent = h ? `${h.beats} ударов` : '';
@@ -175,7 +178,7 @@
       card(h.artifacts_pct + '%', 'артефактов отброшено'),
     ].join('');
     $('recHrvHints').innerHTML = hrvHints(h, hist).map(([c, t]) => `<div class="${c}">${t}</div>`).join('');
-    const D = x.duration_s, ser = h.series.map((p) => ({ x: p[0] / 60, y: p[1] }));
+    const D = A.runBounds(x)[1], ser = h.series.map((p) => ({ x: p[0] / 60, y: p[1] }));
     const hrPts = (x.curve || []).map((p) => ({ x: p[0] / 60, y: p[1] }));
     const xmin = Math.floor(ser.length ? ser[0].x : 0), xmax = Math.ceil(ser.length ? ser[ser.length - 1].x : D / 60);
     chart('recHrvChart', {
@@ -225,7 +228,7 @@
     $('recHints').innerHTML = hints(r, hist).map(([c, t]) => `<div class="${c}">${t}</div>`).join('');
     renderHrv(x, r);
     // recovery curve with markers and exponential fit
-    const D = x.duration_s, pts = x.curve.filter((p) => p[0] >= D - 180).map((p) => ({ x: (p[0] - D) / 60, y: p[1] }));
+    const D = A.runBounds(x)[1], pts = x.curve.filter((p) => p[0] >= D - 180).map((p) => ({ x: (p[0] - D) / 60, y: p[1] }));
     const xmax = r.post_s / 60;
     const ds = [{ label: 'пульс', data: pts, borderColor: '#ff4d4d', backgroundColor: 'rgba(255,77,77,.10)', fill: true, pointRadius: 0, borderWidth: 2, tension: 0.15, order: 3 }];
     if (r.tau) { const fit = []; for (let t = 0; t <= Math.min(r.post_s, 900); t += 10) fit.push({ x: t / 60, y: r.hr_ss + r.fit_A * Math.exp(-t / r.tau) }); ds.push({ label: `экспонента, τ=${r.tau} с`, data: fit, borderColor: '#3fa7ff', borderDash: [6, 4], pointRadius: 0, borderWidth: 2, order: 2 }); }
@@ -244,7 +247,7 @@
   function renderOverlay() {
     const recent = items.slice(0, 6), maxPost = Math.min(30, Math.max(...recent.map((it) => it.r.post_s / 60)));
     const ds = recent.map((it, i) => {
-      const D = it.x.duration_s, a = 1 - i * 0.14;
+      const D = A.runBounds(it.x)[1], a = 1 - i * 0.14;
       const data = it.x.curve.filter((p) => p[0] >= D && p[0] <= D + maxPost * 60).map((p) => ({ x: (p[0] - D) / 60, y: mode === 'abs' ? p[1] : it.r.hr_end - p[1] }));
       return { label: when(it.x.started_at), data, borderColor: `rgba(${i ? '63,167,255' : '255,77,77'},${a})`, pointRadius: 0, borderWidth: i ? 1.5 : 2.5, tension: 0.2 };
     });

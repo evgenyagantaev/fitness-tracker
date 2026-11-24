@@ -267,7 +267,7 @@ def recovery_curves(workouts: list[dict[str, Any]], bin_s: int = 3) -> list[dict
             continue
         out.append({
             "id": w["id"], "date": w.get("date"), "started_at": w["started_at"], "type": w.get("type"),
-            "duration_s": w.get("duration_s"), "moving_s": w.get("moving_s"), "distance_m": w.get("distance_m"),
+            "duration_s": w.get("duration_s"), "moving_s": w.get("moving_s"), "distance_m": w.get("distance_m"), "seg": w.get("seg"),
             "hr": w.get("hr"), "device": w.get("device"), "session_start": w.get("session_start"),
             "session_end": w.get("session_end"), "recovery": w.get("recovery"), "curve": _bin(ss, bin_s),
             "rr_count": len(w.get("session_rr") or []),

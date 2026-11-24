@@ -54,7 +54,7 @@
       const recs = ((await WR.listAcc()).records || []).filter((r) => r.complete && !r.active);
       for (const r of recs) {
         if (r.test) { await WR.deleteAcc({ id: r.id }).catch(() => {}); continue; }
-        try { const rec = await uploadOne(r); if (cur && rec && rec.workout_id === cur) show({ id: cur }); } catch (e) { console.warn('acc upload', r.id, e); break; }
+        try { const rec = await uploadOne(r); if (rec && rec.workout_id && rec.result && rec.result.kind === 'phone' && window.FTWorkout && window.FTWorkout.attachMotion) window.FTWorkout.attachMotion(rec.workout_id, rec.result.motion); if (cur && rec && rec.workout_id === cur) show({ id: cur }); } catch (e) { console.warn('acc upload', r.id, e); break; }
       }
     } finally { busy = false; }
     await uploadBattery().catch(() => {});
@@ -76,13 +76,19 @@
   let cur = null, chart = null;
   const esc = (t) => String(t).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
   const fmt = (v, d) => (v == null ? '—' : (typeof v === 'object' ? v.med : v).toFixed(d == null ? 0 : d));
-  async function show(w) {
+  async function show(w, beltless) {
     const box = $('wkDynamics'); if (!box) return;
     cur = w.id;
     let a = null;
     try { a = await api('api/workouts/' + w.id + '/dynamics'); } catch (e) { a = null; }
     if (cur !== w.id) return;
     const r = a && a.result;
+    if (r && r.kind === 'phone') {   // beltless run: only a motion profile (feeds run-start / pause detection), no chest dynamics
+      box.classList.add('hidden'); box.innerHTML = '';
+      if (chart) { chart.destroy(); chart = null; }
+      if (r.ok && r.motion && window.FTWorkout && window.FTWorkout.attachMotion && !(w.motion && w.motion.length)) window.FTWorkout.attachMotion(w.id, r.motion);
+      return;
+    }
     if (!r) { box.classList.add('hidden'); box.innerHTML = ''; if (chart) { chart.destroy(); chart = null; } return; }
     box.classList.remove('hidden');
     if (!r.ok) { box.innerHTML = `<h4 class="sub">Беговая динамика (H10)</h4><p class="small muted">Не посчитана: ${r.reason || '—'} (записано ${Math.round((r.samples || 0) / 200)} с акселерометра).</p>`; return; }
@@ -103,7 +109,7 @@
       (partial ? `<p class="small warn">⚠ ${esc(partial)} — показатели только за этот отрезок.</p>` : '') + `<div class="rec-metrics">` +
       items.map(([v, k]) => `<div><b>${v}</b>${k}</div>`).join('') + `</div>` +
       (r.series && r.series.length > 1 ? '<div class="chart-box"><canvas id="wkDynChart"></canvas></div>' : '') +
-      `<p class="small muted">Медиана по беговым шагам (${r.steps_used}). ` + (r.gct_clear_pct != null
+      `<p class="small muted">Только беговые шаги внутри найденного бега (${r.steps_used}); паузы и по ±7 с вокруг них не учитываются. ` + (r.gct_clear_pct != null
         ? `Время опоры и полёта — по форме сигнала (приземление/отталкивание), чёткий контур у ${r.gct_clear_pct}% шагов; модель «пружины» дала бы ${fmt(r.gct_model_ms)} мс.`
         : 'Время опоры и полёта оценены по модели «пружины» из пика вертикальной перегрузки (±10–20 мс).') +
       ` Баланс Л/П — по направлению раскачивания, самая грубая метрика.` +
@@ -119,6 +125,7 @@
           scales: { x: { type: 'linear', title: { display: true, text: 'мин' } },
             y: { position: 'left', grace: '30%', title: { display: true, text: 'см' } },
             y3: { display: run, position: 'right', grace: '30%', grid: { display: false }, title: { display: true, text: 'мс' } } } } });
+      if (window.FTWorkout && window.FTWorkout.markSeg && w.seg) window.FTWorkout.markSeg(chart, w.seg);
     }
   }
 

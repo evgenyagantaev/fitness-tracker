@@ -27,6 +27,8 @@ class AccRecorder {
     final File dir;
     final String id;
     boolean test;
+    /** "h10" (chest strap, 200 Hz) or "phone" (beltless run: the phone's own accelerometer, ~50 Hz, magnitude profile only) */
+    String source = "h10"; int fsNom = FS; int frameEvery = 50;
     private OutputStream data, frames;
     long samples = 0, framesN = 0, firstSensorNs = -1, startedAt;
     int lastFrameType = -1, badFrames = 0;
@@ -52,6 +54,7 @@ class AccRecorder {
                 }
             }
             steps = readMetaInt("steps_rt");
+            try { JSONObject m = meta(); source = m.optString("source", "h10"); fsNom = m.optInt("fs", FS); } catch (Exception ignored) {}
         }
         data = new BufferedOutputStream(new FileOutputStream(new File(dir, "data.bin"), true), 64 * 1024);
         frames = new BufferedOutputStream(new FileOutputStream(new File(dir, "frames.csv"), true), 8 * 1024);
@@ -71,13 +74,34 @@ class AccRecorder {
         try {
             JSONObject o;
             try { o = meta(); } catch (Exception e) { o = new JSONObject(); }
-            o.put("id", id); o.put("fs", FS); o.put("range_g", RANGE_G); o.put("unit", "mG"); o.put("started_at", startedAt);
+            o.put("id", id); o.put("fs", fsNom); o.put("source", source); o.put("range_g", RANGE_G); o.put("unit", "mG"); o.put("started_at", startedAt);
             if (device != null) o.put("device", device);
             if (workoutId != null) o.put("workout_id", workoutId);
             o.put("test", test); o.put("complete", complete); o.put("samples", samples); o.put("steps_rt", steps); o.put("frames", framesN);
             o.put("frame_type", lastFrameType); o.put("bad_frames", badFrames); o.put("format", "int16le-xyz");
             try (FileOutputStream out = new FileOutputStream(new File(dir, "meta.json"))) { out.write(o.toString().getBytes(StandardCharsets.UTF_8)); }
         } catch (Exception ignored) {}
+    }
+
+    /** Phone accelerometer: one sample (m/s²) → int16 mG into the same file format; a frame line every `frameEvery` samples. */
+    private long lastSensorNs = 0, lastWallMs = 0;
+    synchronized void onPhoneSample(long sensorNs, float ax, float ay, float az, long wallMs) {
+        try {
+            if (firstSensorNs < 0) firstSensorNs = sensorNs;
+            byte[] b = new byte[6]; float[] v = { ax, ay, az };
+            for (int c = 0; c < 3; c++) {
+                int x = Math.max(-32768, Math.min(32767, Math.round(v[c] / 9.80665f * 1000f)));
+                b[2 * c] = (byte) (x & 0xff); b[2 * c + 1] = (byte) ((x >> 8) & 0xff);
+            }
+            data.write(b);
+            samples++; lastSensorNs = sensorNs; lastWallMs = wallMs;
+            if (samples % frameEvery == 0) {
+                frames.write((samples + "," + (sensorNs / 1_000_000L) + "," + wallMs + "\n").getBytes(StandardCharsets.US_ASCII));
+                framesN++;
+                if (framesN % 20 == 0) { data.flush(); frames.flush(); }
+                if (framesN % 400 == 0) writeMeta(null, null, false, false);
+            }
+        } catch (IOException e) { badFrames++; }
     }
 
     /** One PMD data notification. Returns number of samples added. */

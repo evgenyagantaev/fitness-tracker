@@ -13,6 +13,9 @@ The UI language is Russian. Server URL and API token are entered in Settings (or
 - Recovery stats (HRR, baseline, tau) and pre/post HRV (RMSSD, SDNN, pNN50)
 - Signal-quality masking when the strap double-counts cadence as HR; auto-end when the strap is taken off
 - GPS stride calibration (good fixes only; running stretches)
+- Run segmentation (v1.7): the run is found from the data, not from the Start/Stop taps — approach, run, pauses (dog stops), cooldown. Pace, distance, cadence, stride calibration, dynamics and the HR peak/recovery anchor use the run only; boundaries are shown on the charts and can be adjusted by hand
+- Runs without a strap: phone step counter + GPS + the phone's own accelerometer (50 Hz magnitude profile, used for run start, pauses and a fallback cadence); no HR/recovery blocks
+- Forgotten Stop: the service detects that the run is over (cadence/GPS, and with a strap the falling HR), notifies, and closes the workout by itself; the raw tail is kept with the record
 - Two-way sync with the server (chunked uploads; last-write-wins per day)
 - Battery percentage of the strap, with a coarse “drain per hour” estimate once enough samples exist
 

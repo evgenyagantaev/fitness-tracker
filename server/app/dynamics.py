@@ -21,7 +21,7 @@ from array import array
 from statistics import median
 from typing import Any
 
-DYN_V = 2
+DYN_V = 3
 G = 9.80665
 
 
@@ -320,10 +320,23 @@ def analyze(data: bytes, frames_csv: str, meta: dict[str, Any] | None = None,
         mid2 = min(nA - 1, int(round(s1["T"] / dts + s2["T"] / dts / 2)))
         s1["side_score"] = q[mid1] - q[mid2]
 
+    # v1.7: only steps inside the run (segmentation by the app), not within EXCL_S of a pause (dog stop → slow-down / re-start)
+    w = workout or {}
+    w_start = w.get("started_at") or _time_of(0, fr_idx, fr_t, t0, dt)
+    seg = w.get("seg") or {}
+    excl_s = 7.0
+    zones = [(float(a) - excl_s, float(b) + excl_s) for a, b in (seg.get("pauses") or [])]
+    r0, r1 = seg.get("t0"), seg.get("t1")
+    n_all = len(steps)
+    if r0 is not None and r1 is not None and wk_type == "run" and seg.get("src") != "none":
+        def _in_run(st: dict) -> bool:
+            t = (_time_of(st["i"], fr_idx, fr_t, t0, dt) - w_start) / 1000.0
+            return r0 + 3.0 <= t <= r1 and not any(a <= t <= b for a, b in zones)
+        steps = [st for st in steps if _in_run(st)]
     run_steps = [s for s in steps if s["run"]] if wk_type == "run" else steps
     is_run = wk_type == "run"
     res: dict[str, Any] = {"v": DYN_V, "ok": True, "samples": n, "fs": round(fs, 2), "duration_s": round(n * dts),
-                           "t0": round(t0), "steps_h10": len(peaks), "steps_used": len(run_steps), "type": wk_type}
+                           "t0": round(t0), "steps_h10": len(peaks), "steps_h10_run": len(steps), "steps_used": len(run_steps), "type": wk_type}
     if len(run_steps) < 30:
         res.update(ok=False, reason="мало беговых шагов")
         return res
@@ -359,8 +372,6 @@ def analyze(data: bytes, frames_csv: str, meta: dict[str, Any] | None = None,
             mL, mR = median(L), median(R)
             res["balance_l_pct"] = round(100 * mL / (mL + mR), 1)
     # stride length / vertical ratio: GPS distance over running stretches / strap steps in them
-    w = workout or {}
-    w_start = w.get("started_at") or _time_of(0, fr_idx, fr_t, t0, dt)
     sl_gps = _stride_gps(run_steps, w.get("track") or [], lambda i: (_time_of(i, fr_idx, fr_t, t0, dt) - w_start) / 1000.0)
     # start steps: strap steps before the phone step counter's first event (only if ACC started within 3 s of «Старт»)
     ser = [p for p in (w.get("step_series") or []) if p and len(p) >= 2]

@@ -93,7 +93,7 @@
       const trim = (w, series) => {
         if (w.samples && w.samples.length) { w.samples = []; w.samples_trimmed = true; }
         if (w.session_samples && w.session_samples.length) { w.session_samples = []; w.samples_trimmed = true; }
-        if (series) for (const k of ['track', 'step_series', 'segments', 'session_rr']) if (w[k] && w[k].length) { w[k] = []; w.samples_trimmed = true; }
+        if (series) for (const k of ['track', 'step_series', 'segments', 'session_rr', 'motion', 'tail']) if (w[k] && w[k].length) { w[k] = []; w.samples_trimmed = true; }
       };
       // RR intervals (HRV) are the heaviest per minute: only the 3 newest workouts keep them locally
       const keepRR = new Set(Object.values(all).sort((a, b) => b.started_at - a.started_at).slice(0, 3).map((w) => w.id));

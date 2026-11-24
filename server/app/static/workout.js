@@ -240,8 +240,53 @@
   function sessionBounds(list, i, sessStart, sessEnd) {
     return [i > 0 ? list[i - 1].endedAt : sessStart, i + 1 < list.length ? list[i + 1].startedAt : sessEnd];
   }
+  // v1.7: the service closed a run by itself (forgotten «Стоп»): build the record from its snapshot, cut at the detected end.
+  // Everything recorded after the cut is kept in w.tail (raw data is never thrown away).
+  let collectingAuto = false;
+  async function collectAutoEnded() {
+    if (!WR || !WR.takeAutoEnded || collectingAuto) return false;
+    collectingAuto = true;
+    try {
+      let got = [];
+      try { got = (await WR.takeAutoEnded()).workouts || []; } catch (e) { return false; }
+      let any = false;
+      for (const o of got) {
+        if (!o || !o.workoutId || !o.autoEnd) continue;
+        if (Store.workouts()[o.workoutId]) continue;
+        const a = active && active.id === o.workoutId ? active : null;
+        const endedAt = o.autoEnd.endedAt, dur = Math.max(1, Math.round((endedAt - o.startedAt) / 1000));
+        const samples = o.samples || [], ss = o.stepSeries || [], tr = o.track || [];
+        const stride = (a && a.stride_m) || o.stride || 0.8;
+        const an = A.analyze({ type: o.type, duration_s: dur, steps: o.steps || 0, stride_m: stride, step_series: ss, track: tr });
+        const hrs = samples.map((x) => x[1]).filter((b) => b >= 30);
+        const w = { id: o.workoutId, type: o.type || 'run', date: (a && a.date) || localDate(new Date(o.startedAt)), started_at: o.startedAt, ended_at: endedAt, duration_s: dur,
+          steps: an.steps, stride_m: stride, stride_source: (a && a.stride_source) || 'auto', distance_m: an.distance_m,
+          hr: { avg: hrs.length ? hrs.reduce((p, q) => p + q, 0) / hrs.length : 0, max: hrs.length ? Math.max(...hrs) : 0, min: hrs.length ? Math.min(...hrs) : 0 },
+          samples, device: o.deviceName || (a && a.device) || null, deleted: false,
+          step_distance_m: an.step_distance_m, moving_s: an.moving_s, stop_s: an.stop_s, stops: an.stops, cadence_avg: an.cadence_avg,
+          gps_distance_m: an.gps_distance_m, gps_ok: an.gps_ok, gps_acc: an.gps_acc, gps_coverage: an.gps_coverage, gps_stride_m: an.gps_stride_m,
+          step_series: ss, track: tr, segments: an.segments,
+          auto_end: { reason: o.autoEnd.reason, detected_at: o.autoEnd.detectedAt, last_run_s: o.autoEnd.lastRunSec } };
+        if (o.tail && ((o.tail.step_series || []).length || (o.tail.track || []).length)) w.tail = o.tail;
+        Object.assign(w, derived(w));
+        if (a) { active = null; persistActive(); if (!(svc && svc.running)) { clearInterval(tickTimer); } }
+        Store.putWorkout(w);
+        const dayId = w.type === 'walk' ? 'walk' : w.type === 'run' ? 'run' : null;
+        if ((a ? a.add_run : true) && dayId && w.distance_m > 0) {
+          const today = localDate(), rec = Store.view(today), km = Math.round(w.distance_m / 10) / 100;
+          const d = rec.distance[dayId] || (rec.distance[dayId] = { km: 0, done: false });
+          d.km = Math.round(((d.km || 0) + km) * 100) / 100; d.done = true; Store.put(rec);
+        }
+        msg('wkMsg', `Тренировка закрыта автоматически (ты забыл «Стоп»): ${fmtDur(w.duration_s)}, ${(w.distance_m / 1000).toFixed(2)} км. Данные после конца бега сохранены, границы можно поправить в карточке.`);
+        any = true;
+      }
+      if (any) { renderRec(); renderList(); renderSession(); Sync.run(); }
+      return any;
+    } finally { collectingAuto = false; }
+  }
   async function collectFinished() {
     if (!WR || !WR.takeFinishedSessions) return;
+    await collectAutoEnded();
     let got = [];
     try { got = (await WR.takeFinishedSessions()).sessions || []; } catch (e) { return; }
     const pend = load(K_PEND) || []; localStorage.removeItem(K_PEND);
@@ -330,6 +375,7 @@
       const q = { sinceSess: sess.buf.length, sinceRr: sess.rr.length, since: 1e9, sinceSteps: 1e9, sinceTrack: 1e9 };
       if (rec) { active.step_series = active.step_series || []; active.track = active.track || []; Object.assign(q, { since: active.samples.length, sinceSteps: active.step_series.length, sinceTrack: active.track.length }); }
       const st = await WR.getState(q);
+      if (st.running && rec && st.phase === 'post' && st.workoutActive === false) { svc = st; await collectAutoEnded(); return; }   // closed by the service (forgotten «Стоп»); the strap session goes on
       if (st.running) {
         svc = st;
         if (st.sessionStart !== sess.start) { sess = { start: st.sessionStart, buf: st.sinceSess === 0 ? (st.sess || []) : [], rr: st.sinceRr === 0 ? (st.rr || []) : [] }; }
@@ -375,6 +421,7 @@
 
   async function adoptNative() {
     if (!WR) return;
+    await collectAutoEnded();
     const st = await WR.getState({ since: 0, sinceSteps: 0, sinceTrack: 0, sinceSess: 0, sinceRr: 0 }).catch(() => null);
     if (!st) return;
     if (st.running) { svc = st; sess = { start: st.sessionStart, buf: st.sess || [], rr: st.rr || [] }; }
@@ -446,7 +493,7 @@
     if (P.KeepAwake) P.KeepAwake.allowSleep().catch(() => {});
     clearInterval(tickTimer);
     const a = active, s = summary(a);
-    const an = A.analyze({ duration_s: s.duration_s, steps: a.steps || 0, stride_m: a.stride_m, step_series: a.step_series || [], track: a.track || [] });
+    const an = A.analyze({ type: a.type, duration_s: s.duration_s, steps: a.steps || 0, stride_m: a.stride_m, step_series: a.step_series || [], track: a.track || [] });
     const w = { id: a.id, type: a.type, date: a.date, started_at: a.started_at, ended_at: Date.now(), duration_s: s.duration_s,
       steps: an.steps, stride_m: a.stride_m, stride_source: a.stride_source || 'manual', distance_m: an.distance_m, hr: s.hr, samples: a.samples,
       device: a.device || hr.name || null, deleted: false,
@@ -565,7 +612,7 @@
     detailId = id;
     const empty = (k) => !w[k] || !w[k].length;
     if (w.samples_trimmed || (empty('samples') && empty('step_series') && empty('track'))) {
-      try { const full = await api('api/workouts/' + id); if (full) w = Object.assign({}, w, { samples: full.samples || [], step_series: full.step_series || [], track: full.track || [], segments: full.segments || [], session_samples: full.session_samples || [], session_rr: full.session_rr || [] }); } catch (e) { /* offline */ }
+      try { const full = await api('api/workouts/' + id); if (full) w = Object.assign({}, w, { samples: full.samples || [], step_series: full.step_series || [], track: full.track || [], segments: full.segments || [], session_samples: full.session_samples || [], session_rr: full.session_rr || [], motion: full.motion || [], tail: full.tail || null }); } catch (e) { /* offline */ }
     }
     if ((w.analysis_v || 0) < A.ANALYSIS_V) w = Object.assign({}, w, derived(w));   // older records: derived analytics on the fly
     const an = A.analyze(w);   // recompute profiles (also for workouts recorded before v1.3)
@@ -577,23 +624,29 @@
     const d = new Date(w.started_at);
     $('wkDetailTitle').textContent = `${TYPES[w.type] || w.type}, ${d.toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}`;
     const gpsTxt = w.gps_distance_m != null ? (w.gps_distance_m / 1000).toFixed(2) + ' км' + (w.gps_ok ? '' : ' (слабый сигнал)') : '—';
+    const seg = w.seg || an.seg, beltless = !!w.beltless;
+    const segRu = { auto: 'найден по данным', override: 'поправлен вручную', none: 'бег не найден — вся запись', whole: '' };
+    const segRows = seg && seg.src !== 'whole' ? [['Подход · бег · отход', `${fmtDur(seg.approach_s)} · <span class="seg-run">${fmtDur(seg.run_s)}</span> · ${fmtDur(seg.cooldown_s)} <span class="muted small">(${segRu[seg.src] || ''}${seg.conf && seg.src === 'auto' ? ', уверенность ' + ({ high: 'высокая', medium: 'средняя', low: 'низкая' }[seg.conf] || seg.conf) : ''})</span>`]] : [];
     $('wkDetailStats').innerHTML = [
-      ['Время общее', fmtDur(w.duration_s)], ['В движении', fmtDur(moving)], ['Остановки', stops ? `${stops}, ${fmtDur(stopS)}` : 'нет'],
+      ['Время общее', fmtDur(w.duration_s)], ...segRows, ['В движении', fmtDur(moving)], ['Остановки', stops ? `${stops}, ${fmtDur(stopS)}` : 'нет'],
       ['Дистанция', (w.distance_m / 1000).toFixed(2) + ' км' + (w.gps_ok ? ' (GPS)' : ' (по шагам)')],
       ['Темп (в движении)', pace(w.distance_m)], ['Средняя скорость', moving > 0 && w.distance_m > 0 ? (w.distance_m / moving * 3.6).toFixed(1) + ' км/ч' : '—'],
       ['По шагам', (stepDist / 1000).toFixed(2) + ' км · ' + pace(stepDist)], ['По GPS', gpsTxt + (w.gps_distance_m ? ' · ' + pace(w.gps_distance_m) : '')],
       ['Шаги', w.steps + (w.steps_start_missed ? ` <span class="muted small">(+≈${w.steps_start_missed} в первые секунды, не посчитаны датчиком)</span>` : '')], ['Каденс средний', (w.cadence_avg || an.cadence_avg || '—') + (w.cadence_avg || an.cadence_avg ? ' шаг/мин' : '')],
-      ['Пульс средний', w.hr && w.hr.avg ? Math.round(w.hr.avg) + (q && q.masked_s && w.hr_raw && w.hr_raw.avg ? ` <span class="muted small">(с помехами ${Math.round(w.hr_raw.avg)})</span>` : '') : '—'],
+      ...(beltless ? [] : [['Пульс средний', w.hr && w.hr.avg ? Math.round(w.hr.avg) + (q && q.masked_s && w.hr_raw && w.hr_raw.avg ? ` <span class="muted small">(с помехами ${Math.round(w.hr_raw.avg)})</span>` : '') : '—'],
       ['Пульс макс / мин', w.hr && w.hr.max ? `${w.hr.max} / ${w.hr.min}` + (q && q.masked_s && w.hr_raw && w.hr_raw.max !== w.hr.max ? ` <span class="muted small">(с помехами ${w.hr_raw.max})</span>` : '') : '—'],
-      ['Качество сигнала', q ? `<span class="qbadge ${QL[q.label][1]}" id="wkQuality">${QL[q.label][0]}</span>` + (q.masked_s ? ` <span class="small">помехи ${fmtDur(q.masked_s)} (${Math.round(q.masked_pct)}%) — исключены</span>` : '') : '—'],
+      ['Качество сигнала', q ? `<span class="qbadge ${QL[q.label][1]}" id="wkQuality">${QL[q.label][0]}</span>` + (q.masked_s ? ` <span class="small">помехи ${fmtDur(q.masked_s)} (${Math.round(q.masked_pct)}%) — исключены</span>` : '') : '—']]),
       ['Длина шага', (w.stride_m || 0.75) + ' м' + (w.stride_source === 'auto' ? ' (калибровка)' : '')],
-      ['Шаг по GPS', w.gps_stride_m ? w.gps_stride_m.toFixed(2) + ' м' : '—'], ['Устройство', w.device || '—'],
-    ].map(([k, v]) => `<div>${k}: <b>${v}</b></div>`).join('');
+      ['Шаг по GPS', w.gps_stride_m ? w.gps_stride_m.toFixed(2) + ' м' : '—'], ['Устройство', beltless ? 'без пояса (шагомер и акселерометр телефона)' : (w.device || '—')],
+    ].map(([k, v]) => `<div>${k}: <b>${v}</b></div>`).join('') + (beltless ? '<div class="small muted">Пробежка без пояса: пульса, восстановления и беговой динамики нет.</div>' : '');
+    renderSegControls(w, seg);
     $('wkDetail').classList.remove('hidden');
     if (detailChart) { detailChart.destroy(); detailChart = null; }
-    if (w.session_samples && w.session_samples.length) { detailChart = window.FTRecoveryUI.sessionChart($('wkChart'), w); $('wkHrTitle').textContent = 'Пульс: до старта, тренировка, восстановление'; }
-    else { drawChart('wkChart', w.samples || [], false); $('wkHrTitle').textContent = 'Пульс'; }
-    const rv = w.session_samples && w.session_samples.length ? A.recovery(w) : null;
+    const hasHr = !beltless && ((w.session_samples && w.session_samples.length) || (w.samples && w.samples.length));
+    $('wkHrTitle').classList.toggle('hidden', !hasHr); $('wkChart').parentElement.classList.toggle('hidden', !hasHr);
+    if (hasHr && w.session_samples && w.session_samples.length) { detailChart = window.FTRecoveryUI.sessionChart($('wkChart'), w); $('wkHrTitle').textContent = 'Пульс: до старта, подход, бег, восстановление'; }
+    else if (hasHr) { drawChart('wkChart', w.samples || [], false); $('wkHrTitle').textContent = 'Пульс'; }
+    const rv = !beltless && w.session_samples && w.session_samples.length ? A.recovery(w) : null;
     const hv = rv && w.session_rr && w.session_rr.length ? A.hrv(w) : null;
     $('wkRecovery').innerHTML = rv ? window.FTRecoveryUI.metricsHtml(rv) + (hv && (hv.pre || hv.post5_10) ? '<div class="rec-metrics">' +
       [[hv.pre && hv.pre.rmssd, 'RMSSD до старта, мс'], [hv.pre && hv.pre.sdnn, 'SDNN до старта, мс'], [hv.post5_10 && hv.post5_10.rmssd, 'RMSSD 5–10 мин после'], [hv.post_end && hv.post_end.rmssd, 'RMSSD в конце']]
@@ -602,16 +655,67 @@
     const qn = $('wkQualityNote');
     if (qn) {
       const notes = [];
-      if (q && q.masked_s) notes.push(`Пульс на участках, отмеченных на графике красным (${fmtDur(q.masked_s)}), похож на «залипание» на каденс: датчик считал шаги вместо ударов (пульс ≈ каденсу, интервалы между ударами чередуются 1:2). Эти участки не входят в средний и максимальный пульс. Обычно помогает смочить электроды перед стартом и затянуть пояс плотнее.`);
-      else if (q && q.label !== 'good' && q.rr_artifacts_pct != null) notes.push(`Отброшено ${q.rr_artifacts_pct}% межударных интервалов как артефакты — смочи электроды и подтяни пояс.`);
+      if (!beltless && q && q.masked_s) notes.push(`Пульс на участках, отмеченных на графике красным (${fmtDur(q.masked_s)}), похож на «залипание» на каденс: датчик считал шаги вместо ударов (пульс ≈ каденсу, интервалы между ударами чередуются 1:2). Эти участки не входят в средний и максимальный пульс. Обычно помогает смочить электроды перед стартом и затянуть пояс плотнее.`);
+      else if (!beltless && q && q.label !== 'good' && q.rr_artifacts_pct != null) notes.push(`Отброшено ${q.rr_artifacts_pct}% межударных интервалов как артефакты — смочи электроды и подтяни пояс.`);
       if (w.inherit) { const p = Store.workouts()[w.inherit.of]; notes.push(`Повторная пробежка в той же сессии: исходный пульс и HRV до старта взяты из записи перед первой пробежкой${p ? ' (' + new Date(p.started_at).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) + ')' : ''}, а не из отдыха между пробежками.`); }
       qn.innerHTML = notes.map((t) => `<p class="small">${t}</p>`).join('');
       qn.classList.toggle('hidden', !notes.length);
     }
     drawProfiles(w, an);
-    if (window.FTDyn) window.FTDyn.show(w);
+    if (cadChart) markSeg(cadChart, seg);
+    if (detailChart) markSeg(detailChart, seg);
+    if (window.FTDyn) window.FTDyn.show(w, beltless);
     drawMap(w.track || []);
     $('wkDetail').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  // ---------------- run boundaries on charts + manual adjust ----------------
+  // Chart.js plugin: dashed lines at the run start / end, orange bands for pauses (x axis in minutes from «Старт»)
+  function ensureSegPlugin() {
+    if (!window.Chart || window.Chart.registry.plugins.get('ftSegBands')) return;
+    window.Chart.register({ id: 'ftSegBands', afterDatasetsDraw(chart) {
+      const sg = chart.$seg, xs = chart.scales && chart.scales.x; if (!sg || !xs) return;
+      const { ctx, chartArea: ca } = chart; ctx.save();
+      const X = (t) => xs.getPixelForValue(t / 60);
+      for (const [a, b] of sg.pauses || []) { ctx.fillStyle = 'rgba(255,170,40,.28)'; const x0 = Math.max(ca.left, X(a)), x1 = Math.min(ca.right, X(b)); if (x1 > x0) ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top); }
+      if (sg.src !== 'whole' && sg.src !== 'none') {
+        ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.font = '11px sans-serif';
+        for (const [t, col, txt] of [[sg.t0, '#39d353', 'старт бега'], [sg.t1, '#ff7a45', 'финиш']]) {
+          const x = X(t); if (x < ca.left - 1 || x > ca.right + 1) continue;
+          ctx.strokeStyle = col; ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, ca.top); ctx.lineTo(x, ca.bottom); ctx.stroke();
+          ctx.fillText(txt, Math.min(x + 3, ca.right - 60), ca.top + 11);
+        }
+      }
+      ctx.restore();
+    } });
+  }
+  function markSeg(chart, seg) { if (!chart || !seg) return; ensureSegPlugin(); chart.$seg = seg; chart.update('none'); }
+  // manual correction: ± buttons move the start / end of the run; stored as run_override and applied by the same code
+  function renderSegControls(w, seg) {
+    const el = $('wkSegCtl'); if (!el) return;
+    if (!seg || seg.src === 'whole' || w.type !== 'run') { el.classList.add('hidden'); el.innerHTML = ''; return; }
+    el.classList.remove('hidden');
+    const btn = (k, d) => `<button class="btn seg-adj" data-k="${k}" data-d="${d}">${d > 0 ? '+' : '−'}${Math.abs(d)} с</button>`;
+    el.innerHTML = `<div class="small"><b>Границы бега</b> — если найдены неточно, подвинь (всё пересчитается: темп, дистанция, каденс, пульс, восстановление):</div>` +
+      `<div class="seg-row">Старт бега: <b>${fmtDur(seg.t0)}</b> ${[-30, -5, 5, 30].map((d) => btn(0, d)).join('')}</div>` +
+      `<div class="seg-row">Финиш бега: <b>${fmtDur(seg.t1)}</b> ${[-30, -5, 5, 30].map((d) => btn(1, d)).join('')}</div>` +
+      (w.run_override ? '<div class="seg-row"><button class="btn seg-reset">Вернуть автоопределение</button></div>' : '');
+    el.querySelectorAll('.seg-adj').forEach((b) => b.addEventListener('click', () => adjustRun(w, +b.dataset.k, +b.dataset.d)));
+    const r = el.querySelector('.seg-reset'); if (r) r.addEventListener('click', () => applyOverride(w, null));
+  }
+  function adjustRun(w, k, d) {
+    const cur = (w.seg && [w.seg.t0, w.seg.t1]) || [0, w.duration_s];
+    const ov = (w.run_override || [null, null]).slice();
+    ov[k] = Math.max(0, Math.min(w.duration_s, Math.round((cur[k] + d) * 10) / 10));
+    if (ov[1] != null && ov[0] != null && ov[1] < ov[0] + 10) return;
+    applyOverride(w, [ov[0] != null ? ov[0] : cur[0], ov[1] != null ? ov[1] : cur[1]]);
+  }
+  function applyOverride(w, ov) {
+    const nw = Object.assign({}, w, { run_override: ov });
+    if (!ov) delete nw.run_override;
+    Object.assign(nw, derived(nw)); if (!ov) nw.run_override = null;
+    Store.putWorkout(nw);
+    renderList(); openDetail(w.id);
   }
 
   // ---------------- speed / cadence profiles, map ----------------
@@ -773,5 +877,19 @@
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { renderBattery(); if (active && active.native) poll(); } });
 
-  window.FTWorkout = { onShow, isRecording: () => !!active, refreshCalibration, startMonitor, _svc: () => svc, _onHr: onHr, _hr: hr };
+  // beltless run: the phone-accelerometer profile (server) joins the workout record; run start / pauses are re-derived with it
+  const motionTried = new Set();
+  async function attachMotion(wid, motion) {
+    if (motionTried.has(wid)) return; motionTried.add(wid);
+    try {
+      let w = Store.workouts()[wid]; if (!w) return;
+      if (!motion) { const a = await api('api/workouts/' + wid + '/dynamics'); motion = a && a.result && a.result.motion; }
+      if (!motion || !motion.length) return;
+      const full = await api('api/workouts/' + wid);
+      w = Object.assign({}, w, full && full.id ? full : {}, { motion });
+      Store.putWorkout(Object.assign({}, w, derived(w)));
+      renderList(); if (detailId === wid && !$('wkDetail').classList.contains('hidden')) openDetail(wid);
+    } catch (e) { /* next time */ }
+  }
+  window.FTWorkout = { onShow, markSeg, attachMotion, isRecording: () => !!active, refreshCalibration, startMonitor, _svc: () => svc, _onHr: onHr, _hr: hr };
 })();

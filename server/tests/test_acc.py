@@ -149,3 +149,55 @@ def test_chunk_crc_and_whole_file_sha(client):
     rec = client.get(f"/api/acc/{aid}").json()["record"]
     assert rec["meta"]["verified"] is True
     assert rec["result"]["partial"].startswith("частичная запись")
+
+
+# ---------------- v1.7: phone accelerometer (beltless), segmentation-aware dynamics ----------------
+def synth_phone(dur=240, fs=50.0, steps_per_s=2.8, still=(100, 130), seed=3, h2=0.25):
+    """|a| rhythm at the step rate while running, nothing during `still`; arbitrary orientation (gravity on y)."""
+    random.seed(seed)
+    n = int(dur * fs); out = []
+    for i in range(n):
+        t = i / fs
+        if still[0] <= t < still[1]:
+            amp = 0.0
+        else:
+            amp = 0.8 * math.sin(2 * math.pi * steps_per_s * t) + h2 * math.sin(2 * math.pi * steps_per_s * t * 2 + 1)
+        a = 1.0 + amp
+        out.append((int(random.gauss(0, 0.01) * 1000), int(a * 1000 + random.gauss(0, 8)), int(random.gauss(0, 0.01) * 1000)))
+    data = b"".join(struct.pack("<hhh", *o) for o in out)
+    t0 = 1795515945678
+    fr = [f"{k},{int((k - 1) / fs * 1000) + 5000},{t0 + int((k - 1) / fs * 1000) + random.randint(5, 60)}" for k in range(50, n + 1, 50)]
+    return data, "\n".join(fr) + "\n", n
+
+
+def test_phone_motion_cadence_and_stillness():
+    from app import phone_motion as PM
+    d, f, n = synth_phone()
+    r = PM.analyze(d, f, {"fs": 50, "started_at": 1795515945678 + 5000 - 5000}, {"started_at": 1795515945678})
+    assert r["ok"] and r["kind"] == "phone"
+    rows = r["motion"]
+    run = [x for x in rows if 20 < x[0] < 90]
+    assert run and all(abs(x[1] - 168) <= 4 for x in run), run[:3]
+    still = [x for x in rows if 106 < x[0] < 124]
+    assert still and all(x[1] == 0 and x[2] < 0.04 for x in still), still
+    assert 160 <= r["cad_med"] <= 176
+
+
+def test_phone_motion_folds_half_rate_arm_swing():
+    from app import phone_motion as PM
+    d, f, n = synth_phone(steps_per_s=1.4, still=(0, 0), h2=0.6)      # only the stride rhythm (+ its 2nd harmonic in synth)
+    r = PM.analyze(d, f, {"fs": 50}, {"started_at": 1795515945678})
+    assert 160 <= r["cad_med"] <= 176
+
+
+def test_dynamics_only_inside_run_and_away_from_pauses():
+    d, f, _ = synth(dur=130)
+    t0 = 1795515945678
+    seg = {"src": "auto", "t0": 40.0, "t1": 120.0, "pauses": [[70.0, 80.0]]}
+    w = {"type": "run", "started_at": t0 - 2000, "seg": seg}
+    r_all = D.analyze(d, f, {"fs": 200}, {"type": "run", "started_at": t0 - 2000})
+    r = D.analyze(d, f, {"fs": 200}, w)
+    assert r["ok"] and r["steps_used"] < r_all["steps_used"]
+    assert r["steps_used"] <= (120 - 40 - 10 - 14) * 170 / 60 + 8      # run − pause − 7 s each side
+    # no step inside the excluded zone: the series never has a minute-bucket for those seconds beyond the run window
+    assert abs(r["cadence"]["med"] - 170) <= 1

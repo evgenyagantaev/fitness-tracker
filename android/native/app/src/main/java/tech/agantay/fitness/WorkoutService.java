@@ -129,6 +129,10 @@ public class WorkoutService extends Service implements SensorEventListener {
     public int onStartCommand(Intent intent, int flags, int startId) {
         String cmd = intent == null || intent.getBooleanExtra("resume", false) ? "resume"
             : (intent.getStringExtra("cmd") != null ? intent.getStringExtra("cmd") : "workout");
+        if ("autoend".equals(cmd)) {
+            if (running) autoEndWorkout(intent.getIntExtra("endSec", -1), "user");
+            return START_STICKY;
+        }
         if ("end".equals(cmd)) {
             if (running) endSession("user"); else stopSelf();
             return START_NOT_STICKY;
@@ -160,6 +164,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             acquireWakeLock();
             startSteps();   // whole HR session: the counter is warm at «Старт», so the first steps are not lost
             if (workoutActive) startGps();
+            if (workoutActive && deviceId == null) handler.post(() -> startAcc(false, 0));   // beltless run resumed after the process died
             connectHr();
             handler.post(ticker);
         } else if (beganWorkout) {
@@ -346,6 +351,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             if (tickCount % 10 == 0) saveState();
             if (tickCount % 600 == 0) readBattery();
             if (tickCount % 5 == 0) { AccRecorder r = acc; if (r != null) r.flush(); }
+            if (tickCount % 30 == 0) checkForgottenStop();
             long now = System.currentTimeMillis();
             if (accTest && accTestUntil > 0 && now > accTestUntil + 3000) stopAcc(true);
             String reason;
@@ -363,6 +369,102 @@ public class WorkoutService extends Service implements SensorEventListener {
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fitness:workout");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire(6 * 60 * 60 * 1000L);   // safety cap 6 h
+    }
+
+    // ---------------- forgot to press «Стоп» (v1.7) ----------------
+    static final String ALERT_CHANNEL = "workout-alert", AUTOEND_FILE = "auto-ended.json";
+    static final int ALERT_ID = NOTIF_ID + 2;
+    private boolean forgotNotified = false;
+    private void checkForgottenStop() {
+        RunEnd.Verdict v; int endSec;
+        synchronized (this) {
+            if (!workoutActive || !"run".equals(type)) return;
+            int now = (int) ((System.currentTimeMillis() - startedAt) / 1000);
+            v = RunEnd.verdict(stepSeries, track, samples, deviceId != null, now);
+            endSec = v.lastRunSec;
+        }
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (!v.ran || !v.notify) { if (forgotNotified) { nm.cancel(ALERT_ID); forgotNotified = false; } return; }
+        if (v.close) { Log.i(TAG, "forgotten stop: closing the workout at +" + endSec + " s"); nm.cancel(ALERT_ID); forgotNotified = false; autoEndWorkout(endSec, "auto"); return; }
+        if (forgotNotified) return;
+        forgotNotified = true;
+        try {
+            if (Build.VERSION.SDK_INT >= 26 && nm.getNotificationChannel(ALERT_CHANNEL) == null)
+                nm.createNotificationChannel(new NotificationChannel(ALERT_CHANNEL, "Забытый «Стоп»", NotificationManager.IMPORTANCE_DEFAULT));
+            String hhmm = new java.text.SimpleDateFormat("HH:mm", Locale.getDefault()).format(new java.util.Date(startedAt + endSec * 1000L));
+            PendingIntent yes = PendingIntent.getService(this, 3, new Intent(this, WorkoutService.class).putExtra("cmd", "autoend").putExtra("endSec", endSec),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Intent open = new Intent(this, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            PendingIntent pi = PendingIntent.getActivity(this, 4, open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            nm.notify(ALERT_ID, new NotificationCompat.Builder(this, ALERT_CHANNEL).setSmallIcon(R.drawable.ic_stat_notify)
+                .setContentTitle("Похоже, пробежка закончилась в " + hhmm + ". Завершить?")
+                .setContentText("Запись продолжается. Если ничего не нажимать, она закроется сама, данные сохранятся.")
+                .addAction(0, "Завершить", yes).setContentIntent(pi).setAutoCancel(true).build());
+        } catch (Exception e) { Log.w(TAG, "forgot notification", e); }
+    }
+
+    /**
+     * Finish the workout at the detected end (last running second + 20 s). Nothing is thrown away: the snapshot handed to the app is cut
+     * at that point, everything recorded after it travels along as `tail` and is stored with the workout.
+     */
+    void autoEndWorkout(int endSec, String why) {
+        JSONObject snap;
+        long endMs;
+        boolean end;
+        synchronized (this) {
+            if (!workoutActive) return;
+            long now = System.currentTimeMillis();
+            int nowSec = (int) ((now - startedAt) / 1000);
+            if (endSec < 0 || endSec > nowSec) endSec = nowSec;
+            int cut = Math.min(nowSec, endSec + RunEnd.COOLDOWN_KEEP_S);
+            endMs = startedAt + cut * 1000L;
+            snap = state(0);
+            try {
+                JSONArray tailSteps = new JSONArray(), tailTrack = new JSONArray();
+                JSONArray ss = new JSONArray(), tr = new JSONArray(), sm2 = new JSONArray();
+                int steps2 = 0;
+                for (int[] p : stepSeries) { if (p[0] <= cut) { ss.put(new JSONArray().put(p[0]).put(p[1])); steps2 = p[1]; } else tailSteps.put(new JSONArray().put(p[0]).put(p[1])); }
+                for (double[] p : track) { JSONArray a = new JSONArray(); for (double x : p) a.put(x); if (p[0] <= cut) tr.put(a); else tailTrack.put(a); }
+                for (int[] p : samples) if (p[0] <= cut) sm2.put(new JSONArray().put(p[0]).put(p[1]));
+                snap.put("stepSeries", ss); snap.put("track", tr); snap.put("samples", sm2); snap.put("steps", steps2);
+                snap.put("workoutId", workoutId); snap.put("startedAt", startedAt); snap.put("type", type); snap.put("stride", stride);
+                snap.put("deviceName", deviceName);
+                snap.put("autoEnd", new JSONObject().put("reason", why).put("endedAt", endMs).put("lastRunSec", endSec).put("detectedAt", now));
+                if (tailSteps.length() > 0 || tailTrack.length() > 0) snap.put("tail", new JSONObject().put("step_series", tailSteps).put("track", tailTrack));
+            } catch (Exception e) { Log.w(TAG, "autoEnd snapshot", e); }
+            appendAutoEnded(this, snap);
+            try { sessWorkouts.put(new JSONObject().put("id", workoutId).put("startedAt", startedAt).put("endedAt", endMs)); } catch (Exception ignored) {}
+            stopAcc(true);
+            workoutActive = false; workoutEnd = endMs; phase = "post";
+            lastHrAt = Math.max(lastHrAt, now - 30000);
+            end = deviceId == null;
+        }
+        forgotNotified = false;
+        try { getSystemService(NotificationManager.class).cancel(ALERT_ID); } catch (Exception ignored) {}
+        if (sm != null && end) { sm.unregisterListener(this); stepsOn = false; }
+        if (lm != null) { try { lm.removeUpdates(locListener); } catch (Exception ignored) {} }
+        if (end) endSession("auto-end"); else { startInForeground(); saveState(); }
+        try { if (sessionListener != null) sessionListener.run(); } catch (Exception ignored) {}
+    }
+    static synchronized void appendAutoEnded(Context ctx, JSONObject o) {
+        JSONArray all = readAutoEnded(ctx); all.put(o);
+        try (FileOutputStream out = new FileOutputStream(new File(ctx.getFilesDir(), AUTOEND_FILE))) { out.write(all.toString().getBytes(StandardCharsets.UTF_8)); }
+        catch (Exception e) { Log.w(TAG, "appendAutoEnded", e); }
+    }
+    static synchronized JSONArray readAutoEnded(Context ctx) {
+        try {
+            File f = new File(ctx.getFilesDir(), AUTOEND_FILE);
+            if (!f.exists()) return new JSONArray();
+            byte[] b = new byte[(int) f.length()];
+            try (FileInputStream in = new FileInputStream(f)) { int r = in.read(b); }
+            return new JSONArray(new String(b, StandardCharsets.UTF_8));
+        } catch (Exception e) { return new JSONArray(); }
+    }
+    /** handed to the app once; the file is removed only after the app has them (see takeAutoEnded in the plugin) */
+    static synchronized JSONArray takeAutoEnded(Context ctx) {
+        JSONArray a = readAutoEnded(ctx);
+        new File(ctx.getFilesDir(), AUTOEND_FILE).delete();
+        return a;
     }
 
     // ---------------- steps ----------------
@@ -682,6 +784,7 @@ public class WorkoutService extends Service implements SensorEventListener {
     /** Start raw ACC streaming into acc/<id>. test=true: a short check outside a workout (seconds). */
     synchronized String startAcc(boolean test, int seconds) {
         if (!test && !workoutActive) return "нет тренировки";
+        if (!test && deviceId == null) return startPhoneAcc();
         if (acc != null && ("recording".equals(accStatus) || "starting".equals(accStatus)) ) return null;
         if (gatt == null || !"connected".equals(hrStatus) || pmdCp == null || pmdData == null) {
             accStatus = "idle";
@@ -706,6 +809,39 @@ public class WorkoutService extends Service implements SensorEventListener {
         handler.removeCallbacks(accWatch); handler.postDelayed(accWatch, ACC_RETRY_MS);
         return null;
     }
+    // ---- beltless run: the phone's own accelerometer (50 Hz, raw magnitude profile for run start / pauses; no chest-style dynamics) ----
+    static final int PHONE_ACC_US = 20000;
+    private SensorEventListener phoneAccL = null;
+    synchronized String startPhoneAcc() {
+        if (phoneAccL != null) return null;
+        if (!"run".equals(type) && !"walk".equals(type)) return null;
+        if (sm == null) return "нет датчика";
+        Sensor s = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        if (s == null) { accStatus = "error:в телефоне нет акселерометра"; return accStatus; }
+        try {
+            String id = "a" + (workoutId != null ? workoutId : Long.toString(startedAt, 36));
+            if (acc == null || !acc.id.equals(id)) {
+                acc = new AccRecorder(getFilesDir(), id, startedAt, "phone", workoutId, false);
+                acc.source = "phone"; acc.fsNom = 50; acc.writeMeta("phone", workoutId, false, false);
+            }
+        } catch (Exception e) { accStatus = "error:" + e.getMessage(); return accStatus; }
+        final AccRecorder rec = acc;
+        phoneAccL = new SensorEventListener() {
+            @Override public void onSensorChanged(SensorEvent e) {
+                long wall = System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - e.timestamp) / 1_000_000L;
+                rec.onPhoneSample(e.timestamp, e.values[0], e.values[1], e.values[2], wall);
+            }
+            @Override public void onAccuracyChanged(Sensor sensor, int accuracy) {}
+        };
+        boolean ok = sm.registerListener(phoneAccL, s, PHONE_ACC_US, 1_000_000);
+        accStatus = ok ? "recording" : "error:не удалось включить акселерометр телефона";
+        Log.i(TAG, "phone ACC " + (ok ? "on" : "FAILED") + " " + rec.id);
+        return ok ? null : accStatus;
+    }
+    private void stopPhoneAcc() {
+        if (phoneAccL != null && sm != null) { try { sm.unregisterListener(phoneAccL); } catch (Exception ignored) {} }
+        phoneAccL = null;
+    }
     static final long ACC_RETRY_MS = 2000; static final int ACC_MAX_RETRIES = 5;
     int accRetries = 0; long accRequestedAt = 0;
     /** No data 2 s after START → stop + re-enable notifications + start again (up to 5 times, every 2 s). */
@@ -725,6 +861,7 @@ public class WorkoutService extends Service implements SensorEventListener {
     /** complete=true: the run is over, the file is final and may be uploaded. */
     synchronized void stopAcc(boolean complete) {
         handler.removeCallbacks(accWatch);
+        if (complete) stopPhoneAcc();
         final BluetoothGattCharacteristic cp = pmdCp;
         if (cp != null && gatt != null && ("recording".equals(accStatus) || "starting".equals(accStatus))) gattEnqueue(() -> writeChar(cp, AccRecorder.STOP));
         if (acc != null) { if (complete) acc.close(true); else acc.flush(); if (complete) acc = null; }
@@ -1093,7 +1230,8 @@ public class WorkoutService extends Service implements SensorEventListener {
 
     private void notifyDone(String reason) {
         try {
-            String txt = "strap-off".equals(reason) || "no-hr".equals(reason) ? "Пояс снят — запись пульса завершена и сохранена"
+            String txt = "auto-end".equals(reason) ? "Тренировка закрыта автоматически — похоже, пробежка закончилась раньше. Данные сохранены"
+                : "strap-off".equals(reason) || "no-hr".equals(reason) ? "Пояс снят — запись пульса завершена и сохранена"
                 : "post-done".equals(reason) ? "Восстановление записано (время вышло)" : "Мониторинг пульса завершён";
             Intent open = getPackageManager().getLaunchIntentForPackage(getPackageName());
             PendingIntent pi = open != null ? PendingIntent.getActivity(this, 2, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT) : null;

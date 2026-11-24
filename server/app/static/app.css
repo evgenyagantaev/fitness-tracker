@@ -146,3 +146,8 @@ select { background: #222; color: #eee; border: 1px solid #444; border-radius: 6
 .qbadge.q-poor { background: rgba(255,77,77,.2); color: #ff6b6b; }
 .quality-note { border-left: 3px solid #ff6b6b; padding: 2px 10px; margin: 8px 0; background: rgba(255,77,77,.06); }
 .quality-note p { margin: 6px 0; }
+
+.seg-ctl { margin: 8px 0; padding: 8px 10px; background: #1a1a1a; border-radius: 8px; }
+.seg-ctl .seg-row { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.seg-ctl .btn { padding: 2px 8px; font-size: 12px; }
+.seg-run { color: #39d353; }

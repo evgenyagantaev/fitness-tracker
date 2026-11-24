@@ -293,6 +293,14 @@ public class WorkoutRecorderPlugin extends Plugin {
         call.resolve(r);
     }
 
+    /** Workouts the service closed by itself (forgotten «Стоп»); handed over once, they survive the app being closed. */
+    @PluginMethod
+    public void takeAutoEnded(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("workouts", WorkoutService.takeAutoEnded(getContext()));
+        call.resolve(r);
+    }
+
     // ---- battery optimisation / MIUI autostart ----
     @PluginMethod
     public void batteryStatus(PluginCall call) {

@@ -7,7 +7,7 @@ import re
 import secrets
 from datetime import date as Date, datetime
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import dynamics, stats
+from . import dynamics, phone_motion, stats
 from .db import Database
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -149,6 +149,14 @@ class Workout(BaseModel):
     cal_gps_m: float | None = Field(default=None, ge=0, le=1_000_000)
     tail_cut: float | None = Field(default=None, ge=-7 * 86400, le=7 * 86400)
     inherit: Inherit | None = None
+    # v1.7: run segmentation (derived; raw data above is never altered). seg = {t0, t1, pauses, approach_s, cooldown_s, …} in
+    # seconds from «Старт»; run_override = [t0|null, t1|null] set by hand; motion = phone-accelerometer profile [t, cadence, energy g]
+    beltless: bool | None = None
+    seg: dict[str, Any] | None = Field(default=None, max_length=40)
+    run_override: list[float | None] | None = Field(default=None, max_length=2)
+    motion: list[tuple[float, int | None, float | None]] = Field(default=[], max_length=50_000)
+    tail: dict[str, Any] | None = Field(default=None, max_length=10)   # raw steps/track recorded after an automatic end
+    auto_end: dict[str, Any] | None = Field(default=None, max_length=10)
     updated_at: int = Field(ge=0)
     deleted: bool = False
 
@@ -347,7 +355,7 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
                  limit: Annotated[int, Query(ge=1, le=1000)] = 50):
         ws = db.list_workouts(limit=100000)
         out = stats.runs(ws, type_q, limit)
-        dyn = {a["workout_id"]: a["result"] for a in db.list_acc(100000) if a.get("workout_id") and (a.get("result") or {}).get("ok")}
+        dyn = {a["workout_id"]: a["result"] for a in db.list_acc(100000) if a.get("workout_id") and (a.get("result") or {}).get("ok") and (a.get("result") or {}).get("kind") != "phone"}
         for r in out:
             d = dyn.get(r["id"])
             if d:
@@ -402,9 +410,13 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
         d = acc_dir(aid)
         w = db.get_workout(workout_id) if workout_id else None
         try:
+            if meta.get("source") == "phone":
+                return phone_motion.analyze((d / "data.bin").read_bytes(), (d / "frames.csv").read_text(), meta, w)
             res = dynamics.analyze((d / "data.bin").read_bytes(), (d / "frames.csv").read_text(), meta, w)
             if meta.get("partial"):
                 res["partial"] = meta["partial"]
+            sg = (w or {}).get("seg") or {}
+            res["seg_key"] = f"{sg.get('t0')}:{sg.get('t1')}:{len(sg.get('pauses') or [])}:{sg.get('src')}"
             return res
         except Exception as e:  # noqa: BLE001
             return {"v": dynamics.DYN_V, "ok": False, "reason": f"ошибка анализа: {e}"}
@@ -484,7 +496,15 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
         if not r:
             a = db.upsert_acc({**a, "result": analyze_acc(a["id"], a["meta"], wid)})
             r = a["result"]
-        if reanalyze or r.get("v") != dynamics.DYN_V or (
+        phone = a["meta"].get("source") == "phone"
+        w_now = db.get_workout(wid) or {}
+        sg = w_now.get("seg") or {}
+        seg_key = f"{sg.get('t0')}:{sg.get('t1')}:{len(sg.get('pauses') or [])}:{sg.get('src')}"
+        if phone:
+            if reanalyze or r.get("v") != phone_motion.PHONE_V:
+                a = db.upsert_acc({**a, "result": analyze_acc(a["id"], a["meta"], wid)})
+            return a
+        if reanalyze or r.get("v") != dynamics.DYN_V or r.get("seg_key", seg_key) != seg_key or (
                 r.get("ok") and "step_len_m" not in r and (db.get_workout(wid) or {}).get("distance_m")):
             a = db.upsert_acc({**a, "result": analyze_acc(a["id"], a["meta"], wid)})
         return a

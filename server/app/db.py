@@ -212,7 +212,7 @@ class Database:
         d.update({"id": r["id"], "started_at": r["started_at"], "updated_at": r["updated_at"],
                   "deleted": bool(r["deleted"]), "rev": r["rev"]})
         if not with_samples:
-            for k in ("samples", "step_series", "track", "segments", "session_samples", "session_rr"):
+            for k in ("samples", "step_series", "track", "segments", "session_samples", "session_rr", "motion", "tail"):
                 d.pop(k, None)
         return d
 
@@ -225,7 +225,7 @@ class Database:
             data = {k: v for k, v in w.items() if k not in ("id", "started_at", "updated_at", "deleted", "rev")}
             if cur is not None:   # clients trim old series locally; an empty series never erases the stored one
                 old = json.loads(cur["data"])
-                for k in ("samples", "step_series", "track", "segments", "session_samples", "session_rr"):
+                for k in ("samples", "step_series", "track", "segments", "session_samples", "session_rr", "motion", "tail"):
                     if not data.get(k) and old.get(k):
                         data[k] = old[k]
             c.execute("INSERT OR REPLACE INTO workouts (id,started_at,data,updated_at,deleted,rev) VALUES (?,?,?,?,?,?)",
