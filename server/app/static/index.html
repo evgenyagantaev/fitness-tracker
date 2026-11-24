@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>Фитнес-трекер</title>
+  <link rel="icon" href="icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- Login (web only; the Android app works offline without it) -->
+  <div id="login" class="screen hidden">
+    <div class="board">
+      <h2>Фитнес-трекер</h2>
+      <p class="muted">Введи токен доступа к серверу.</p>
+      <label class="field native-only">Адрес сервера
+        <input id="loginUrl" type="url" placeholder="https://example.com/fitness/">
+      </label>
+      <label class="field">Токен
+        <input id="loginToken" type="password" autocomplete="current-password" placeholder="токен">
+      </label>
+      <div id="loginError" class="error"></div>
+      <button id="loginBtn" class="btn primary">Войти</button>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <nav class="tabs">
+      <button data-tab="today" class="active">Сегодня</button>
+      <button data-tab="workout">Тренировка</button>
+      <button data-tab="recovery">Восстановление</button>
+      <button data-tab="stats">Статистика</button>
+      <button data-tab="settings">Настройки</button>
+    </nav>
+
+    <section id="tab-today" class="tab">
+      <div class="board" id="mainContent">
+        <h2>Фитнес-трекер</h2>
+        <div class="date-row"><span id="todayLabel"></span><span id="progressLabel" class="muted"></span></div>
+        <div class="progress"><div id="progressBar"></div></div>
+        <div id="checklist"></div>
+        <button id="resetButton">Ресет</button>
+        <div id="syncStatus" class="muted small"></div>
+      </div>
+    </section>
+
+    <section id="tab-workout" class="tab hidden">
+      <div class="wide">
+        <div class="panel native-only" id="hrPanel">
+          <div class="panel-head">
+            <h3>Пульсометр</h3>
+            <span class="hr-now"><i class="led" title="нет связи с пульсометром"></i><b id="hrNowBpm">—</b><small>уд/мин</small> <span id="hrDevStatus" class="small muted">не подключён</span></span>
+          </div>
+          <div id="hrDevName" class="small muted"></div>
+          <div id="strapBattInfo" class="small muted"></div>
+          <button id="hrPick" class="btn primary">Найти пульсометр</button>
+          <button id="hrPickAll" class="btn">Все устройства</button>
+          <button id="hrDisconnect" class="btn hidden">Отключить</button>
+          <div id="hrMsg" class="small muted"></div>
+          <div class="sess-box">
+            <div id="hrSessState" class="small"></div>
+            <button id="hrMonStart" class="btn hidden">Начать мониторинг пульса</button>
+            <button id="hrMonStop" class="btn hidden">Завершить мониторинг</button>
+            <label class="check-line"><input type="checkbox" id="hrAutoMon" checked> <span>Начинать мониторинг сразу, как пояс подключился (пульс до старта и восстановление после финиша)</span></label>
+            <label class="field">Записывать восстановление после финиша до
+              <select id="hrPostMin"><option value="20">20 мин</option><option value="30">30 мин</option><option value="60">60 мин</option><option value="90">90 мин</option><option value="120">120 мин</option></select>
+            </label>
+            <p class="small muted">Мониторинг сам завершится, когда снимешь пояс (нет пульса 3 мин), по истечении этого времени или кнопкой. До старта — не дольше 2 ч.</p>
+          </div>
+        </div>
+
+        <div class="panel native-only hidden" id="batPanel">
+          <h3>Запись в фоне</h3>
+          <div id="batOptState" class="small"></div>
+          <p class="small muted">На Xiaomi (MIUI) ещё нужно: «Автозапуск» — включить, и «Контроль активности» (экономия батареи) — «Нет ограничений». Иначе MIUI может остановить запись при выключенном экране.</p>
+          <p class="small muted">GPS: при первом «Старте» разреши доступ к местоположению («Точное», «Только во время использования» достаточно). Надёжнее выбрать в «О приложении → Разрешения → Местоположение» вариант «Разрешить в любом режиме» — тогда GPS не пропадёт, если система перезапустит запись.</p>
+          <button id="batOpt" class="btn primary">Отключить оптимизацию батареи</button>
+          <button id="batMiui" class="btn">Автозапуск (MIUI)</button>
+          <button id="batApp" class="btn">О приложении → Контроль активности</button>
+        </div>
+
+        <div class="panel native-only" id="recPanel">
+          <div class="panel-head">
+            <h3>Запись</h3>
+            <div class="seg" id="wkTypeSeg">
+              <button data-type="run" class="active">Бег</button>
+              <button data-type="walk">Ходьба</button>
+              <button data-type="workout">Тренировка</button>
+            </div>
+          </div>
+          <div class="live">
+            <div class="live-hr"><i class="led big" title="нет связи с пульсометром"></i><span id="liveHr">—</span><small>уд/мин</small></div>
+            <div class="live-grid">
+              <div><b id="liveTime">0:00</b><span>время</span></div>
+              <div><b id="liveAvg">—</b><span>средний</span></div>
+              <div><b id="liveMax">—</b><span>макс</span></div>
+              <div><b id="liveSteps">0</b><span>шаги</span></div>
+              <div><b id="liveDist">0.00</b><span>км по шагам (шаг <span id="strideLabel">0.75</span> м)</span></div>
+              <div><b id="livePace">—</b><span>темп, мин/км</span></div>
+              <div><b id="liveMoving">0:00</b><span>в движении</span></div>
+              <div><b id="liveGps">—</b><span>км по GPS</span></div>
+              <div><b id="liveCad">—</b><span>каденс, шаг/мин</span></div>
+            </div>
+          </div>
+          <div id="liveGpsState" class="small muted"></div>
+          <div id="recovLive" class="recov-live hidden">
+            <h4 class="sub">Восстановление пульса идёт</h4>
+            <div class="live-grid" id="recovLiveGrid"></div>
+            <div class="chart-box small-chart"><canvas id="recovLiveChart"></canvas></div>
+          </div>
+          <div class="chart-box small-chart"><canvas id="liveChart"></canvas></div>
+          <label class="check-line"><input type="checkbox" id="wkGps" checked> <span>Записывать GPS-трек (дистанция, скорость, калибровка шага)</span></label>
+          <label class="check-line"><input type="checkbox" id="wkAddRun" checked> <span>Добавить дистанцию в «Бег» за сегодня</span></label>
+          <button id="wkStart" class="btn primary big">Старт</button>
+          <button id="wkStop" class="btn danger big hidden">Стоп</button>
+          <div id="wkMsg" class="small muted"></div>
+        </div>
+
+        <div class="panel">
+          <h3>Тренировки</h3>
+          <div id="wkList"></div>
+        </div>
+        <div class="panel hidden" id="wkDetail">
+          <div class="panel-head"><h3 id="wkDetailTitle"></h3><button id="wkDetailClose" class="btn">✕</button></div>
+          <div id="wkDetailStats" class="totals small"></div>
+          <div id="wkRecovery" class="hidden"></div>
+          <div id="wkQualityNote" class="quality-note hidden"></div>
+          <div id="wkDynamics" class="hidden"></div>
+          <h4 class="sub" id="wkHrTitle">Пульс</h4>
+          <div class="chart-box"><canvas id="wkChart"></canvas></div>
+          <h4 class="sub">Скорость по отрезкам в 100 шагов</h4>
+          <div class="chart-box"><canvas id="wkSpeedChart"></canvas></div>
+          <h4 class="sub">Каденс</h4>
+          <div class="chart-box small-chart"><canvas id="wkCadChart"></canvas></div>
+          <div id="wkMapWrap" class="hidden"><h4 class="sub">Трек</h4><div id="wkMap" class="map"></div></div>
+          <button id="wkDelete" class="btn danger">Удалить тренировку</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-recovery" class="tab hidden">
+      <div class="wide">
+        <div id="recOffline" class="board hidden"></div>
+        <div id="recEmpty" class="panel hidden">
+          <h3>Восстановление пульса</h3>
+          <p>Пока нет тренировок с записью пульса после финиша.</p>
+          <p class="small muted">Как записать: надень пояс заранее и подключи его на вкладке «Тренировка» — начнётся мониторинг. После «Стоп» пульс пишется дальше, пока не снимешь пояс (или до заданного времени).</p>
+        </div>
+        <div id="recMain" class="hidden">
+          <div class="panel">
+            <div class="panel-head"><h3 id="recLatestTitle">Последняя тренировка</h3><select id="recPick" class="rec-pick"></select></div>
+            <div class="cards" id="recCards"></div>
+            <div class="chart-box tall"><canvas id="recCurve"></canvas></div>
+            <div id="recHints" class="hints small"></div>
+          </div>
+          <div class="panel" id="recHrvPanel">
+            <div class="panel-head"><h3>Вариабельность ритма (HRV)</h3><span class="muted small" id="recHrvNote"></span></div>
+            <div id="recHrvNone" class="small muted hidden">Для этой тренировки нет RR-интервалов. Их передаёт Polar H10 (и большинство нагрудных поясов) — запись идёт автоматически вместе с пульсом, начиная с версии 1.4.</div>
+            <div id="recHrvBody">
+              <div class="cards" id="recHrvCards"></div>
+              <div class="chart-box tall"><canvas id="recHrvChart"></canvas></div>
+              <div id="recHrvHints" class="hints small"></div>
+            </div>
+            <div class="chart-box small-chart"><canvas id="recHrvTrend"></canvas></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h3>Сравнение кривых</h3>
+              <div class="seg" id="recModeSeg"><button data-mode="abs" class="active">Пульс</button><button data-mode="drop">Падение от финиша</button></div>
+            </div>
+            <div class="chart-box tall"><canvas id="recOverlay"></canvas></div>
+            <p class="small muted">Последние тренировки: чем ярче линия, тем новее. Кривая, которая падает быстрее и глубже, — лучшее восстановление.</p>
+          </div>
+          <div class="panel">
+            <h3>Динамика</h3>
+            <div class="chart-box"><canvas id="recTrend"></canvas></div>
+            <div class="chart-box small-chart"><canvas id="recTauTrend"></canvas></div>
+          </div>
+          <div class="panel">
+            <h3>Все записи</h3>
+            <div class="table-wrap"><table class="calib-table" id="recTable"></table></div>
+          </div>
+          <div class="panel">
+            <h3>Как читать</h3>
+            <div class="small hints-static">
+              <p><b>Падение за 1 мин (HRR1)</b> — насколько пульс снизился за первую минуту после финиша. Чем больше, тем лучше. У тренированных бегунов обычно 25–50 уд/мин; меньше 12 после активной нагрузки в исследованиях связывают с более низкой тренированностью.</p>
+              <p><b>За 2 мин (HRR2)</b> — более устойчивый показатель; обычно больше 22 уд/мин.</p>
+              <p><b>τ (тау)</b> — постоянная времени экспоненты, по которой спадает пульс: за τ секунд остаётся ~37 % от разницы между пульсом на финише и уровнем, к которому он стремится. Меньше — быстрее восстановление.</p>
+              <p><b>RMSSD</b> — главный показатель вариабельности: насколько отличаются соседние интервалы между ударами (мс). Чем выше в покое, тем сильнее «тормоз» парасимпатики. Сравнивай с собой: RMSSD до старта заметно ниже твоего обычного — частый признак недовосстановления, стресса, недосыпа или начала простуды. Во время бега HRV почти исчезает; после финиша она медленно растёт — чем быстрее, тем лучше. <b>SDNN</b> — общий разброс интервалов; <b>pNN50</b> — доля соседних интервалов, отличающихся больше чем на 50 мс. Для честного сравнения меряй до старта одинаково: 3–5 мин спокойно стоя или сидя.</p>
+              <p><b>Исходный пульс</b> — самая низкая минута до старта. «До исходного +10» — сколько времени понадобилось, чтобы к нему вернуться.</p>
+              <p>Сравнивай прежде всего себя с собой: на цифры влияют интенсивность финиша, жара, сон, кофе, усталость. Если ты сразу после финиша идёшь шагом, а не стоишь, падение будет меньше. Для сопоставимости старайся после финиша делать одно и то же (например, 2 мин стоять или идти). Это не медицинская оценка.</p>
+            </div>
+          </div>
+        </div>
+        <div class="panel" id="ecgPanel">
+          <div class="panel-head"><h3>ЭКГ <span class="muted small">(Polar H10, 130 Гц, одно отведение)</span></h3></div>
+          <div class="native-only ecg-rec">
+            <div class="row">
+              <select id="ecgDur"><option value="30">30 с</option><option value="60" selected>1 мин</option><option value="120">2 мин</option><option value="180">3 мин</option><option value="300">5 мин</option></select>
+              <button id="ecgStart" class="btn primary">Запись ЭКГ</button>
+              <button id="ecgStop" class="btn hidden">Остановить и сохранить</button>
+              <span id="ecgState" class="small muted"></span>
+            </div>
+            <div class="ecg-live hidden" id="ecgLiveBox"><canvas id="ecgLive"></canvas></div>
+            <p class="small muted">Сиди или стой спокойно, не разговаривай, смочи электроды. Пульс и RR во время записи продолжают писаться.</p>
+          </div>
+          <div id="ecgEmpty" class="small muted">Записей ЭКГ пока нет.</div>
+          <div id="ecgListBox" class="hidden">
+            <div class="table-wrap"><table class="calib-table" id="ecgList"></table></div>
+          </div>
+          <div id="ecgViewBox" class="hidden">
+            <div class="panel-head"><h4 class="sub" id="ecgViewTitle"></h4>
+              <div class="seg" id="ecgZoom"><button data-w="2.5">2,5 с</button><button data-w="5">5 с</button><button data-w="10" class="active">10 с</button><button data-w="30">30 с</button><button data-w="60">60 с</button></div>
+            </div>
+            <div class="rec-metrics" id="ecgStats"></div>
+            <div class="ecg-view"><canvas id="ecgCanvas"></canvas></div>
+            <div class="ecg-over"><canvas id="ecgOverview"></canvas></div>
+            <div class="row small muted"><span>Тяни или листай график, щипок/колёсико с Ctrl — масштаб. Клик по обзору — перейти.</span><button id="ecgDelete" class="btn danger">Удалить запись</button></div>
+          </div>
+          <p class="small muted disclaimer">Это не медицинское устройство и не медицинская ЭКГ: одно отведение с груди, запись для любопытства и тренировок. Автоматический анализ (R-зубцы, RMSSD) может ошибаться и не ищет аритмии. Если есть жалобы (боль в груди, перебои, обмороки, сильная одышка) — к врачу, а не в приложение.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-stats" class="tab hidden">
+      <div class="wide">
+        <div id="statsOffline" class="board hidden">Статистика доступна, когда есть связь с сервером.</div>
+        <div class="cards" id="streakCards"></div>
+        <div class="panel">
+          <h3>История <span class="muted small">(последние 26 недель)</span></h3>
+          <div id="heatmap" class="heatmap"></div>
+          <div class="legend small muted">меньше <i class="l0"></i><i class="l1"></i><i class="l2"></i><i class="l3"></i><i class="l4"></i> больше</div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Повторения</h3>
+            <div class="seg" id="periodSeg">
+              <button data-period="week" class="active">Недели</button>
+              <button data-period="month">Месяцы</button>
+            </div>
+          </div>
+          <div id="repsCharts"></div>
+        </div>
+        <div class="panel">
+          <h3>Бег и ходьба, км <span class="muted small">(по неделям / месяцам)</span></h3>
+          <div class="chart-box"><canvas id="kmChart"></canvas></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h3>Пробежки</h3>
+            <div class="seg" id="runTypeSeg">
+              <button data-type="run" class="active">Бег</button>
+              <button data-type="walk">Ходьба</button>
+            </div>
+          </div>
+          <div class="cards" id="runCards"></div>
+          <div class="chart-box"><canvas id="runsChart"></canvas></div>
+          <div id="dynTrend" class="hidden"><h4 class="sub">Беговая динамика по пробежкам (пояс H10)</h4><div class="chart-box"><canvas id="dynChart"></canvas></div></div>
+          <p class="small muted">Столбики — дистанция, линия — средний темп по времени в движении (остановки вычтены).</p>
+        </div>
+        <div class="panel">
+          <h3>По дням <span class="muted small">(30 дней)</span></h3>
+          <div id="dailyCharts"></div>
+          <h4 class="sub">Километры по дням</h4>
+          <div class="chart-box"><canvas id="dailyKmChart"></canvas></div>
+        </div>
+        <div class="panel" id="totalsPanel"></div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="tab hidden">
+      <div class="wide">
+        <div class="panel native-only">
+          <h3>Сервер</h3>
+          <label class="field">Адрес сервера
+            <input id="setUrl" type="url" placeholder="https://example.com/fitness/">
+          </label>
+          <label class="field">Токен
+            <input id="setToken" type="password" placeholder="токен">
+          </label>
+          <button id="saveServer" class="btn primary">Сохранить и синхронизировать</button>
+          <div id="serverMsg" class="small muted"></div>
+        </div>
+        <div class="panel native-only">
+          <h3>Напоминания</h3>
+          <label class="check-line"><input type="checkbox" id="notifEnabled"> <span>Напоминать «Помни о фитнесе»</span></label>
+          <div class="row3">
+            <label class="field">С (час)<input id="notifStart" type="number" min="0" max="23"></label>
+            <label class="field">До (час)<input id="notifEnd" type="number" min="0" max="23"></label>
+            <label class="field">Каждые (ч)<input id="notifEvery" type="number" min="1" max="12"></label>
+          </div>
+          <p class="small muted">Если всё на сегодня выполнено, напоминания до конца дня не приходят.</p>
+          <button id="saveNotif" class="btn primary">Сохранить</button>
+          <button id="testNotif" class="btn">Проверить</button>
+          <div id="notifMsg" class="small muted"></div>
+        </div>
+        <div class="panel">
+          <h3>Длина шага и калибровка по GPS</h3>
+          <label class="field">Длина шага
+            <select id="strideMode">
+              <option value="auto">Авто — по GPS-калибровке (если есть), иначе вручную</option>
+              <option value="manual">Вручную</option>
+            </select>
+          </label>
+          <label class="field">Длина шага вручную, м<input id="strideInput" type="number" min="0.3" max="2" step="0.01"></label>
+          <div id="calibPanel" class="small"></div>
+        </div>
+        <div class="panel">
+          <h3>Упражнения</h3>
+          <p class="small muted">Список общий для телефона и веба, хранится на сервере.</p>
+          <div id="exEditor"></div>
+          <button id="exAddSets" class="btn">+ Подходы</button>
+          <button id="exAddDist" class="btn">+ Дистанция</button>
+          <button id="exSave" class="btn primary">Сохранить список</button>
+          <div id="exMsg" class="small muted"></div>
+        </div>
+        <div class="panel">
+          <h3>Синхронизация</h3>
+          <div id="syncInfo" class="small muted"></div>
+          <button id="syncNow" class="btn">Синхронизировать сейчас</button>
+          <button id="logout" class="btn danger web-only">Выйти</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div id="notification">
+    <span class="close">&times;</span>
+    <div class="title">Фитнес-трекер</div>
+    <div class="message">Помни о фитнесе</div>
+  </div>
+
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="core.js"></script>
+  <script src="stats.js"></script>
+  <script src="analysis.js"></script>
+  <script src="recovery.js"></script>
+  <script src="ecg.js"></script>
+  <script src="dynamics.js"></script>
+  <script src="workout.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

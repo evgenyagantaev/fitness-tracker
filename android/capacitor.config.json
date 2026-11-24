@@ -1,0 +1,9 @@
+{
+  "appId": "tech.agantay.fitness",
+  "appName": "Фитнес-трекер",
+  "webDir": "www",
+  "android": { "path": "native" },
+  "plugins": {
+    "LocalNotifications": { "smallIcon": "ic_stat_notify", "iconColor": "#2ECC40" }
+  }
+}

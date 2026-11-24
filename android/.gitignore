@@ -1,0 +1,5 @@
+node_modules/
+www/
+native/app/build/
+native/build/
+native/.gradle/

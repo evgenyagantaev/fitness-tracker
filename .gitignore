@@ -1,0 +1,54 @@
+# Secrets and machine-local config
+token-for-evgeny.txt
+*.env
+!.env.example
+!**/.env.example
+local.properties
+google-services.json
+*.jks
+*.keystore
+android/keystore/keystore.properties
+
+# Databases, backups, and recorded health / GPS / IMU data
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.bin
+localrun/
+audit/
+
+# One-off scripts, logs, and a private e2e that expected a local copy of real workouts
+tools/
+e2e/v152-e2e.mjs
+e2e/output/
+original/
+
+# Build and dependency artifacts
+*.apk
+*.aab
+*.ap_
+node_modules/
+.venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.gradle/
+**/build/
+android/www/
+android/native/.kotlin/
+android/native/capacitor-cordova-android-plugins/
+android/native/app/src/main/assets/public/
+android/native/app/src/main/assets/capacitor.config.json
+android/native/app/src/main/assets/capacitor.plugins.json
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+*.log
+
+# Root-level screenshots and phone captures (may include real sessions)
+/screenshot*.png
+/phone-*.png
+/prod-web.png

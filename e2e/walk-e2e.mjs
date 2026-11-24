@@ -1,0 +1,33 @@
+// v1.5: daily «Ходьба» on the board + in stats
+import { chromium } from 'playwright-core';
+import { shot } from './paths.mjs';
+const SERVER = 'http://127.0.0.1:8090/fitness/', TOKEN = 'localtest-token';
+const H = { Authorization: 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+const ok = (c, m) => { if (!c) { console.error('FAIL', m); process.exitCode = 1; } else console.log('ok  ', m); };
+const ex = await fetch(SERVER + 'api/exercises', { headers: H }).then((r) => r.json());
+const ids = ex.map((e) => e.id);
+ok(ids.indexOf('walk') === ids.indexOf('run') + 1, 'exercises after migration: ' + ids.join(', '));
+const browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', args: ['--no-sandbox'] });
+const page = await (await browser.newContext({ viewport: { width: 393, height: 851 }, deviceScaleFactor: 2, locale: 'ru-RU', timezoneId: 'Europe/Moscow' })).newPage();
+page.on('pageerror', (e) => { console.error('PAGE ERROR', e.message); process.exitCode = 1; });
+await page.goto(SERVER);
+await page.waitForSelector('#loginToken', { state: 'visible' }); await page.fill('#loginToken', TOKEN); await page.click('#loginBtn');
+await page.waitForSelector('#app:not(.hidden)'); await page.waitForTimeout(1500);
+const board = await page.textContent('#tab-today');
+ok(/Бег/.test(board) && /Ходьба/.test(board), 'today board shows Бег and Ходьба');
+await page.screenshot({ path: shot('screenshot-walk-today.png'), fullPage: true });
+// put walk km for today through the UI input if present, else via store
+const today = await page.evaluate(() => FT.localDate());
+await page.evaluate(() => { const r = FT.Store.view(FT.localDate()); r.distance.walk = { km: 3.4, done: true }; FT.Store.put(r); FT.Sync.schedule(10); });
+await page.waitForTimeout(2500);
+await page.click('.tabs button[data-tab=stats]'); await page.waitForTimeout(2500);
+const cards = (await page.textContent('#streakCards')).replace(/\s+/g, ' ');
+ok(/км пройдено пешком/.test(cards) && /3,4/.test(cards), 'stats cards: ' + cards);
+const n = await page.evaluate(() => ({ km: Chart.getChart('kmChart').data.datasets.map((d) => d.label), daily: Chart.getChart('dailyKmChart').data.datasets.map((d) => d.label + ':' + d.data[d.data.length - 1]) }));
+ok(n.km.includes('Ходьба') && n.daily.some((x) => x.startsWith('Ходьба:3.4')), 'charts ' + JSON.stringify(n));
+ok((await page.textContent('#totalsPanel')).includes('Ходьба'), 'totals: ' + (await page.textContent('#totalsPanel')).replace(/\s+/g, ' ').slice(0, 300));
+await page.screenshot({ path: shot('screenshot-walk-stats.png'), fullPage: true });
+const st = await fetch(SERVER + 'api/stats/streaks', { headers: H }).then((r) => r.json());
+console.log('streaks', JSON.stringify(st), 'today', today);
+await browser.close();
+console.log(process.exitCode ? 'WALK E2E FAILED' : 'WALK E2E PASSED');

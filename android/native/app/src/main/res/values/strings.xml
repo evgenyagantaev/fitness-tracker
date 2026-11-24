@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Фитнес-трекер</string>
+    <string name="title_activity_main">Фитнес-трекер</string>
+    <string name="package_name">tech.agantay.fitness</string>
+    <string name="custom_url_scheme">tech.agantay.fitness</string>
+</resources>

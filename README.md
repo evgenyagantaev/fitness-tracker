@@ -1,0 +1,130 @@
+# Fitness tracker
+
+Personal fitness tracker: a FastAPI + SQLite server, a shared web UI, and a Capacitor Android app (`tech.agantay.fitness`) that talks to a Polar H10 over Bluetooth LE.
+
+The UI language is Russian. Server URL and API token are entered in Settings (or the login screen); they are not baked into the client.
+
+## Features
+
+- Daily board for strength work (pull-ups, push-ups, …) and distance activities (run, walk)
+- Workout recording with heart rate, RR intervals, steps, GPS, cadence, pace, and stop detection
+- Polar H10: BLE Heart Rate (0x180D), HRV, ECG (PMD, 130 Hz), and raw chest accelerometer (200 Hz) during the run itself
+- Offline running-dynamics analysis after the workout: cadence, vertical oscillation, lateral sway, landing impact, ground-contact and flight time, left/right balance, stride length
+- Recovery stats (HRR, baseline, tau) and pre/post HRV (RMSSD, SDNN, pNN50)
+- Signal-quality masking when the strap double-counts cadence as HR; auto-end when the strap is taken off
+- GPS stride calibration (good fixes only; running stretches)
+- Two-way sync with the server (chunked uploads; last-write-wins per day)
+- Battery percentage of the strap, with a coarse “drain per hour” estimate once enough samples exist
+
+## Layout
+
+| Path | What |
+|---|---|
+| `server/` | FastAPI app, SQLite, stats and dynamics, Docker files, pytest tests |
+| `server/app/static/` | Shared web UI (also copied into the Android bundle) |
+| `android/` | Capacitor 8 project; Gradle app lives in `android/native/` |
+| `e2e/` | Playwright checks against a local server / a mocked native bridge |
+| `deploy/` | nginx snippet and an installer script for a `/fitness/` reverse proxy |
+
+## Configure
+
+**Server** — copy `server/.env.example` to `server/.env` (the file is gitignored) and set a strong token:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+```
+FITNESS_API_TOKEN=change-me
+```
+
+Other useful variables, all optional:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FITNESS_API_TOKEN` | (empty, server refuses auth) | Bearer token for the API and web UI |
+| `FITNESS_DB` | `/data/fitness.db` | SQLite path |
+| `FITNESS_TZ` | `Europe/Moscow` | Timezone for “today” |
+| `FITNESS_ROOT_PATH` | empty | Set to `/fitness` behind a reverse proxy |
+| `FITNESS_CORS_ORIGINS` | localhost / Capacitor origins | Comma-separated |
+
+**Client** — open the web UI or the app, enter the server URL (for example `https://example.com/fitness/` or `http://127.0.0.1:8010/`) and the same token, then save. Nothing in the source tree points at a production host.
+
+## Run the server locally
+
+```bash
+cd server
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest -q
+FITNESS_API_TOKEN=dev FITNESS_DB=./dev.db uvicorn app.main:app --port 8010
+# http://127.0.0.1:8010/
+```
+
+Docker (listens on `127.0.0.1:8010`, data in the `fitness-data` volume):
+
+```bash
+cd server
+cp .env.example .env   # then edit FITNESS_API_TOKEN
+./run-docker.sh        # or: docker compose up -d --build
+```
+
+Deploying behind nginx is described in [DEPLOY.md](DEPLOY.md).
+
+## Build the Android app
+
+```bash
+cd android
+npm ci
+export ANDROID_HOME=/path/to/android-sdk
+export JAVA_HOME=/path/to/jdk21
+npm run build:debug    # APK: native/app/build/outputs/apk/debug/app-debug.apk
+```
+
+`npm run build:debug` copies `server/app/static/` into `android/www/` and then runs Gradle.
+
+To install a new debug build *over* an already installed app without losing local data, reuse the same signing key. This repo does not ship a keystore. Put the following gitignored files in `android/keystore/`:
+
+- `debug.keystore` — a JKS keystore
+- `keystore.properties` — `storeFile`, `storePassword`, `keyAlias`, `keyPassword`
+
+If those files are absent, Gradle falls back to the default Android debug key (fine for a fresh install, but it will not upgrade an app signed with another key). To create a local keystore:
+
+```bash
+keytool -genkeypair -keystore android/keystore/debug.keystore -storetype JKS \
+  -alias androiddebugkey -storepass android -keypass android \
+  -keyalg RSA -keysize 2048 -validity 10000 \
+  -dname "CN=Android Debug,O=Android,C=US"
+```
+
+```
+# android/keystore/keystore.properties
+storeFile=debug.keystore
+storePassword=android
+keyAlias=androiddebugkey
+keyPassword=android
+```
+
+The application id is `tech.agantay.fitness`.
+
+## Tests
+
+```bash
+cd server && pytest -q
+cd e2e && npm ci
+# scripts expect a local server (often at http://127.0.0.1:8090/fitness/)
+# and Chrome; override with SERVER and CHROME_PATH if needed
+```
+
+## API (Bearer token required except `/api/health`)
+
+- `GET /api/health`, `GET /api/auth/check`
+- `GET/PUT /api/exercises`, `GET/PUT /api/days/{YYYY-MM-DD}`, `GET /api/days?from=&to=`
+- `POST /api/sync` — offline-first, last-write-wins on a day
+- Workouts, recovery, calibration, ECG, accelerometer upload
+- `GET /api/stats/streaks`, `/api/stats/summary`, `/api/stats/daily`, `/api/stats/totals`, `/api/stats/runs`, `/api/stats/recovery`
+- Swagger: `/docs` (behind nginx: `/fitness/docs`)
+
+## License
+
+MIT. See [LICENSE](LICENSE).

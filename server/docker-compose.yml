@@ -1,0 +1,20 @@
+name: fitness-tracker
+services:
+  fitness:
+    build: .
+    image: fitness-tracker:latest
+    container_name: fitness-tracker
+    restart: unless-stopped
+    env_file: .env            # FITNESS_API_TOKEN=...
+    environment:
+      FITNESS_TZ: Europe/Moscow
+      FITNESS_ROOT_PATH: /fitness
+    ports:
+      - "127.0.0.1:8010:8010"   # only reachable from nginx on the same host
+    volumes:
+      - fitness-data:/data
+    mem_limit: 256m
+
+volumes:
+  fitness-data:
+    name: fitness-data

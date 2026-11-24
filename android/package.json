@@ -1,0 +1,22 @@
+{
+  "name": "fitness-tracker-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Фитнес-трекер — Android client (Capacitor)",
+  "scripts": {
+    "copy-web": "node scripts/copy-web.mjs",
+    "sync": "npm run copy-web && npx cap sync android",
+    "build:debug": "npm run sync && cd native && ./gradlew assembleDebug --no-daemon"
+  },
+  "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.4.0",
+    "@capacitor-community/keep-awake": "^8.0.1",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/local-notifications": "^8.3.1"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/assets": "^4.0.0",
+    "@capacitor/cli": "^8.6.2"
+  }
+}
