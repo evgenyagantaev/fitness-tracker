@@ -83,7 +83,7 @@ public class WorkoutService extends Service implements SensorEventListener {
     final ArrayList<double[]> track = new ArrayList<>();
     boolean useGps = true;
     String gpsStatus = "off";    // off | no-permission | disabled | searching | ok
-    double gpsDist = 0, gpsAcc = 0, gpsSpeed = 0; long gpsAt = 0;
+    double gpsDist = 0, gpsAcc = 0, gpsSpeed = 0; long gpsAt = 0, gpsSpeedAt = 0;   // gpsSpeedAt: last fix that carried a Doppler speed
     private double[] gpsAnchor = null;
     // HR session: spans pre-run monitoring, the workout(s) and post-run recovery
     long sessionStart = 0, workoutEnd = 0, lastHrAt = 0;
@@ -165,6 +165,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             startSteps();   // whole HR session: the counter is warm at «Старт», so the first steps are not lost
             if (workoutActive) startGps();
             if (workoutActive && deviceId == null) handler.post(() -> startAcc(false, 0));   // beltless run resumed after the process died
+            if (workoutActive) startVoice(false);
             connectHr();
             handler.post(ticker);
         } else if (beganWorkout) {
@@ -185,8 +186,9 @@ public class WorkoutService extends Service implements SensorEventListener {
         samples.clear(); stepsBefore = 0; steps = 0;
         // anchor at «Старт»: steps made before the counter's next (batched) event still count
         stepBase = stepTotal >= 0 ? stepTotal : -1;
-        stepSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; recent.clear();
+        stepSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; gpsSpeedAt = 0; recent.clear();
         workoutActive = true; phase = "workout"; workoutEnd = 0;
+        startVoice(true);
         handler.post(() -> startAcc(false, 0));
     }
 
@@ -352,6 +354,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             if (tickCount % 600 == 0) readBattery();
             if (tickCount % 5 == 0) { AccRecorder r = acc; if (r != null) r.flush(); }
             if (tickCount % 30 == 0) checkForgottenStop();
+            voiceTick();
             long now = System.currentTimeMillis();
             if (accTest && accTestUntil > 0 && now > accTestUntil + 3000) stopAcc(true);
             String reason;
@@ -369,6 +372,47 @@ public class WorkoutService extends Service implements SensorEventListener {
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "fitness:workout");
         wakeLock.setReferenceCounted(false);
         wakeLock.acquire(6 * 60 * 60 * 1000L);   // safety cap 6 h
+    }
+
+    // ---------------- voice announcements (v1.8): only for runs ----------------
+    private RunVoice runVoice = null;
+    private void startVoice(boolean announce) {
+        runVoice = null;
+        if (!"run".equals(type)) return;
+        RunVoice.Cfg cfg = VoiceSpeaker.loadCfg(this);
+        if (!cfg.enabled) return;
+        VoiceSpeaker sp = VoiceSpeaker.get(this);
+        sp.q.clear(); sp.ensure();
+        runVoice = new RunVoice(cfg, sp.q);
+        if (announce) runVoice.started(SystemClock.elapsedRealtime());
+    }
+    /** the workout is over: drop whatever was still waiting to be said (the end-of-run phrase comes from the app / the auto-end) */
+    private void stopVoice() {
+        if (runVoice != null) VoiceSpeaker.get(this).q.clear();
+        runVoice = null;
+    }
+    private void voiceTick() {
+        RunVoice rv = runVoice;
+        if (rv != null && workoutActive) {
+            synchronized (this) {
+                long now = System.currentTimeMillis();
+                int sec = (int) ((now - startedAt) / 1000);
+                boolean gpsOk = "ok".equals(gpsStatus) && gpsDist > 50;
+                double spd = gpsSpeedAt > 0 && now - gpsSpeedAt <= 3000 ? gpsSpeed : Double.NaN;
+                rv.tick(sec, SystemClock.elapsedRealtime(), stepSeries, samples, gpsDist, gpsOk, spd, steps, stride, deviceId != null);
+            }
+        }
+        if (rv != null) VoiceSpeaker.get(this).pump();
+    }
+    /** the service may stop only after the last sentence has been spoken (at most 12 s) */
+    private void stopWhenQuiet() {
+        final long t0 = SystemClock.elapsedRealtime();
+        final Handler hh = new Handler(Looper.getMainLooper());
+        hh.post(new Runnable() {
+            @Override public void run() {
+                if (VoiceSpeaker.get(WorkoutService.this).idle() || SystemClock.elapsedRealtime() - t0 > 12000) stopSelf(); else hh.postDelayed(this, 500);
+            }
+        });
     }
 
     // ---------------- forgot to press «Стоп» (v1.7) ----------------
@@ -435,6 +479,9 @@ public class WorkoutService extends Service implements SensorEventListener {
             appendAutoEnded(this, snap);
             try { sessWorkouts.put(new JSONObject().put("id", workoutId).put("startedAt", startedAt).put("endedAt", endMs)); } catch (Exception ignored) {}
             stopAcc(true);
+            boolean spoke = runVoice != null && runVoice.cfg.events && runVoice.ran();
+            stopVoice();
+            if (spoke) VoiceSpeaker.get(this).sayNow(RunPhrases.ended());
             workoutActive = false; workoutEnd = endMs; phase = "post";
             lastHrAt = Math.max(lastHrAt, now - 30000);
             end = deviceId == null;
@@ -524,7 +571,7 @@ public class WorkoutService extends Service implements SensorEventListener {
         if (n > 0 && track.get(n - 1)[0] >= sec) return;
         track.add(new double[] { sec, lat, lon, Math.round(acc * 10) / 10.0 });
         gpsAcc = acc; gpsAt = System.currentTimeMillis();
-        gpsSpeed = l.hasSpeed() ? l.getSpeed() : 0;
+        gpsSpeed = l.hasSpeed() ? l.getSpeed() : 0; if (l.hasSpeed() && acc <= 30) gpsSpeedAt = System.currentTimeMillis();
         gpsStatus = acc <= 25 ? "ok" : "searching";
         if (acc > 25) return;
         // smooth jitter: mean of the last 3 good fixes (same idea as analysis.js)
@@ -1073,6 +1120,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             o.put("rrCount", rr.size());
             o.put("ecgCapable", ecgCapable);
             o.put("accStatus", accStatus);
+            o.put("voice", runVoice != null ? VoiceSpeaker.get(this).status : null);
             o.put("accSamples", acc != null ? acc.samples : 0);
             o.put("accSteps", acc != null ? acc.steps : 0);
             o.put("accId", acc != null ? acc.id : null);
@@ -1169,6 +1217,7 @@ public class WorkoutService extends Service implements SensorEventListener {
                 try { sessWorkouts.put(new JSONObject().put("id", workoutId).put("startedAt", startedAt).put("endedAt", now)); } catch (Exception ignored) {}
             }
             stopAcc(true);
+            stopVoice();
             workoutActive = false; workoutEnd = now; phase = "post";
             lastHrAt = Math.max(lastHrAt, now - 30000);
             end = !keepSession || deviceId == null;
@@ -1221,7 +1270,7 @@ public class WorkoutService extends Service implements SensorEventListener {
         try { if (sessionListener != null) sessionListener.run(); } catch (Exception ignored) {}
         if (!"user".equals(reason)) notifyDone(reason);
         try { stopForeground(true); } catch (Exception ignored) {}
-        stopSelf();
+        stopWhenQuiet();
         return f;
     }
 

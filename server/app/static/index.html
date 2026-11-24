@@ -296,6 +296,19 @@
           <button id="testNotif" class="btn">Проверить</button>
           <div id="notifMsg" class="small muted"></div>
         </div>
+        <div class="panel native-only" id="voicePanel">
+          <h3>Голосовые оповещения</h3>
+          <label class="check-line"><input type="checkbox" id="voiceOn"> <span>Озвучивать пробежки (только «Бег»; в фоне и при выключенном экране)</span></label>
+          <div id="voiceCats">
+            <label class="check-line"><input type="checkbox" id="voiceEvents"> <span>События: начало, остановка, возобновление, итог в конце</span></label>
+            <label class="check-line"><input type="checkbox" id="voiceHr"> <span>Пульс: «пульс превысил сто двадцать» (шаг 20)</span></label>
+            <label class="check-line"><input type="checkbox" id="voiceSummary"> <span>Каждые 2 минуты бега: пульс, каденс, темп</span></label>
+            <label class="check-line"><input type="checkbox" id="voiceDistance"> <span>Дистанция через каждые 500 м</span></label>
+          </div>
+          <button id="voiceTest" class="btn primary">Проверить голос</button>
+          <div id="voiceInfo" class="small muted"></div>
+          <p class="small muted">Женский русский голос Google, коротко, в стиле радиообмена. Между регулярными сообщениями не меньше 20 секунд; фраза никогда не обрывается на полуслове.</p>
+        </div>
         <div class="panel">
           <h3>Длина шага и калибровка по GPS</h3>
           <label class="field">Длина шага

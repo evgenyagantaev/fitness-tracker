@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- debug builds only: `adb shell am start -n tech.agantay.fitness/.VoiceProbeActivity` lists the TTS voices and renders a sample with each Russian one to files/probe/ -->
+    <application>
+        <activity android:name=".VoiceProbeActivity" android:exported="true" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+    </application>
+</manifest>

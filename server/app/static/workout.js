@@ -527,6 +527,7 @@
     msg('wkMsg', `Сохранено: ${fmtDur(w.duration_s)} (в движении ${fmtDur(w.moving_s)}), ${(w.distance_m / 1000).toFixed(2)} км` +
       (an.pace_s_km ? `, темп ${fmtPace(an.pace_s_km)}/км` : '') + (w.hr.avg ? `, пульс ср. ${Math.round(w.hr.avg)}` : '') +
       (w.gps_distance_m != null ? (w.gps_ok ? ' · GPS ✔' : ' · GPS слабый, дистанция по шагам') : ''));
+    if (WR && WR.announceFinish && a.type === 'run') WR.announceFinish({ type: 'run', distance_m: w.distance_m, moving_s: w.moving_s, pace_s_km: an.pace_s_km || 0, hr_avg: w.hr && w.hr.avg ? w.hr.avg : 0 }).catch(() => {});
     if (stopRes && stopRes.sessionContinues) msg('wkMsg', $('wkMsg').textContent + `. Пульс восстановления пишется ещё до ${postMin()} мин — потом сними пояс (или «Завершить мониторинг»).`);
     renderRec(); renderList(); renderSession();
   }
@@ -870,6 +871,31 @@
     });
   }
   else if (active && isNative) { afterStart(); }
+  // ---------- v1.8: voice announcements (settings; the service does the talking) ----------
+  async function initVoicePanel() {
+    if (!$('voicePanel') || !WR || !WR.voiceInfo) return;
+    const ids = { enabled: 'voiceOn', events: 'voiceEvents', hr: 'voiceHr', summary: 'voiceSummary', distance: 'voiceDistance' };
+    const show = (i) => {
+      for (const k of Object.keys(ids)) $(ids[k]).checked = i[k] !== false;
+      $('voiceCats').classList.toggle('disabled', i.enabled === false);
+      const ok = i.status === 'ok', err = i.status && i.status.startsWith('error');
+      $('voiceInfo').textContent = err ? 'Голос недоступен: ' + i.status.slice(6)
+        : ok ? `Движок: ${i.engine || '—'} · голос: ${i.voice || '—'}${i.gender === 'female' ? ' (женский)' : ''}` : 'Голос загружается…';
+    };
+    const save = async () => {
+      const o = {}; for (const k of Object.keys(ids)) o[k] = $(ids[k]).checked;
+      try { show(await WR.setVoice(o)); } catch (e) { /* ignore */ }
+    };
+    Object.values(ids).forEach((id) => $(id).addEventListener('change', save));
+    $('voiceTest').addEventListener('click', async () => {
+      $('voiceInfo').textContent = 'Говорю…';
+      try { show(await WR.voiceTest()); } catch (e) { $('voiceInfo').textContent = 'Не получилось: ' + (e && e.message || e); return; }
+      setTimeout(async () => { try { show(await WR.voiceInfo()); } catch (e) { /* ignore */ } }, 2500);
+    });
+    try { show(await WR.voiceInfo()); setTimeout(async () => { try { show(await WR.voiceInfo()); } catch (e) { /* ignore */ } }, 2500); } catch (e) { $('voicePanel').classList.add('hidden'); }
+  }
+  initVoicePanel();
+
   if ($('batOpt') && WR) {
     $('batOpt').addEventListener('click', async () => { await WR.requestIgnoreBatteryOptimizations().catch(() => {}); setTimeout(renderBattery, 1500); });
     $('batMiui').addEventListener('click', () => WR.openAutostartSettings().catch(() => {}));

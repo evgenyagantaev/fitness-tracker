@@ -293,6 +293,34 @@ public class WorkoutRecorderPlugin extends Plugin {
         call.resolve(r);
     }
 
+    // ---- v1.8 voice announcements ----
+    @PluginMethod
+    public void setVoice(PluginCall call) {
+        VoiceSpeaker.saveCfg(getContext(), call.getData());
+        call.resolve(toJs(VoiceSpeaker.get(getContext()).info()));
+    }
+    @PluginMethod
+    public void voiceInfo(PluginCall call) {
+        VoiceSpeaker sp = VoiceSpeaker.get(getContext()); sp.ensure();
+        call.resolve(toJs(sp.info()));
+    }
+    @PluginMethod
+    public void voiceTest(PluginCall call) {
+        VoiceSpeaker sp = VoiceSpeaker.get(getContext());
+        sp.sayNow(RunPhrases.test());
+        call.resolve(toJs(sp.info()));
+    }
+    /** at «Стоп» of a run: the app passes the numbers of the saved record (distance, moving time, pace, average HR) */
+    @PluginMethod
+    public void announceFinish(PluginCall call) {
+        RunVoice.Cfg c = VoiceSpeaker.loadCfg(getContext());
+        JSONObject d = call.getData();
+        if (c.enabled && c.events && "run".equals(d.optString("type", "run"))) {
+            VoiceSpeaker.get(getContext()).sayNow(RunPhrases.finish((int) Math.round(d.optDouble("distance_m", 0)), (int) Math.round(d.optDouble("moving_s", 0)),
+                (int) Math.round(d.optDouble("pace_s_km", 0)), (int) Math.round(d.optDouble("hr_avg", 0))));
+        }
+        call.resolve();
+    }
     /** Workouts the service closed by itself (forgotten «Стоп»); handed over once, they survive the app being closed. */
     @PluginMethod
     public void takeAutoEnded(PluginCall call) {

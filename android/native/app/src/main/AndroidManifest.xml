@@ -34,6 +34,11 @@
         </provider>
     </application>
 
+    <!-- the text-to-speech engine (Google Speech Services) must be visible to the app on Android 11+ -->
+    <queries>
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
