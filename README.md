@@ -16,7 +16,7 @@ The UI language is Russian. Server URL and API token are entered in Settings (or
 - Run segmentation (v1.7): the run is found from the data, not from the Start/Stop taps — approach, run, pauses (dog stops), cooldown. Pace, distance, cadence, stride calibration, dynamics and the HR peak/recovery anchor use the run only; boundaries are shown on the charts and can be adjusted by hand
 - Runs without a strap: phone step counter + GPS + the phone's own accelerometer (50 Hz magnitude profile, used for run start, pauses and a fallback cadence); no HR/recovery blocks
 - Forgotten Stop: the service detects that the run is over (cadence/GPS, and with a strap the falling HR), notifies, and closes the workout by itself; the raw tail is kept with the record
-- Voice announcements during runs (v1.8, runs only): a native Android TextToSpeech voice (a Russian female one, offline first) speaks in short radio style — start / stop detected / resumed, «пульс превысил сто двадцать» (every 20 bpm), every 2 min the current pulse, cadence and pace, distance every 500 m, and the result at Stop. Works with the screen off (foreground service, ducking audio focus, navigation-guidance usage). Items never overlap; regular ones are ≥ 20 s apart; events have priority but never cut a phrase; stale ones are dropped. Categories can be switched off and the voice tested in Settings. Russian numerals with full agreement (`RuNum`) are unit-tested against an independent oracle
+- Voice announcements during runs (v1.8.1, runs only): bundled offline neural Russian female voice (Silero TTS v5.1 `xenia` with manual stress marks and radio-filter + continuous radio bed, Opus clips stitched seamlessly in PCM) with Android TextToSpeech as fallback. Short ATC-radio style: start / stop detected / resumed, «пульс превысил сто двадцать» (every 20 bpm), every 2 min the current pulse, cadence and pace, distance every 500 m, and the rounded result at Stop. Works with the screen off (`AudioTrack` on navigation-guidance stream with ducking audio focus). Items never overlap; regular ones are ≥ 20 s apart; events have priority but never cut a phrase; stale ones are dropped. Categories can be switched off and the voice tested in Settings. Russian numerals with full agreement (`RuNum`) are unit-tested against an independent oracle
 - Two-way sync with the server (chunked uploads; last-write-wins per day)
 - Battery percentage of the strap, with a coarse “drain per hour” estimate once enough samples exist
 
@@ -86,6 +86,14 @@ npm run build:debug    # APK: native/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 `npm run build:debug` copies `server/app/static/` into `android/www/` and then runs Gradle.
+
+To bundle the offline neural voice clips (optional — without them the app falls back to Android TTS; Silero `v5_1_ru` weights are CC BY-NC-SA 4.0 so neither weights nor generated `.ogg` clips are committed):
+
+```bash
+python3 android/voice-gen/generate.py --model /path/to/v5_1_ru.pt
+```
+
+This writes Opus `.ogg` clips into the gitignored `android/native/app/src/main/assets/voice/` before building.
 
 To install a new debug build *over* an already installed app without losing local data, reuse the same signing key. This repo does not ship a keystore. Put the following gitignored files in `android/keystore/`:
 

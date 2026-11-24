@@ -24,11 +24,22 @@ final class RunPhrases {
     /** «Дистанция полтора километра.» */
     static String distance(int meters) { return "Дистанция " + RuNum.distance(meters) + "."; }
 
-    /** at Стоп: distance rounded to 10 m; time, average pace and average HR only when known */
+    /** at Стоп: distance rounded to 100 m, moving time rounded to minutes (10-s steps under 45 s); average pace and average HR only when known */
     static String finish(int distM, int movingS, int paceSecPerKm, int hrAvg) {
         StringBuilder sb = new StringBuilder(ended());
-        if (distM >= 10) sb.append(" Дистанция ").append(RuNum.distance(Math.round(distM / 10f) * 10)).append('.');
-        if (movingS >= 5) sb.append(" Время ").append(RuNum.duration(movingS)).append('.');
+        if (distM >= 50) {
+            int d = Math.max(100, Math.round(distM / 100f) * 100);
+            sb.append(" Дистанция ").append(RuNum.distance(d)).append('.');
+        }
+        if (movingS >= 5) {
+            if (movingS < 45) {
+                int s = Math.max(10, Math.round(movingS / 10f) * 10);
+                sb.append(" Время ").append(RuNum.seconds(s)).append('.');
+            } else {
+                int m = Math.max(1, Math.round(movingS / 60f));
+                sb.append(" Время ").append(RuNum.duration(m * 60)).append('.');
+            }
+        }
         if (paceSecPerKm > 0) sb.append(" Средний темп ").append(RuNum.pace(paceSecPerKm)).append('.');
         if (hrAvg > 0) sb.append(" Средний пульс ").append(RuNum.words(hrAvg)).append('.');
         return sb.toString();

@@ -52,3 +52,6 @@ Thumbs.db
 /screenshot*.png
 /phone-*.png
 /prod-web.png
+
+# Pre-rendered Silero TTS clips (CC BY-NC-SA — generated locally, never committed)
+android/native/app/src/main/assets/voice/
