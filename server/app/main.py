@@ -150,10 +150,12 @@ class Workout(BaseModel):
     tail_cut: float | None = Field(default=None, ge=-7 * 86400, le=7 * 86400)
     inherit: Inherit | None = None
     # v1.7: run segmentation (derived; raw data above is never altered). seg = {t0, t1, pauses, approach_s, cooldown_s, …} in
-    # seconds from «Старт»; run_override = [t0|null, t1|null] set by hand; motion = phone-accelerometer profile [t, cadence, energy g]
+    # seconds from «Старт»; run_override = [t0|null, t1|null] set by hand; pause_override = [[t0,t1],…] replaces auto pauses
+    # (including an empty list: no pauses). motion = phone-accelerometer profile [t, cadence, energy g]
     beltless: bool | None = None
     seg: dict[str, Any] | None = Field(default=None, max_length=40)
     run_override: list[float | None] | None = Field(default=None, max_length=2)
+    pause_override: list[tuple[float, float]] | None = Field(default=None, max_length=500)
     motion: list[tuple[float, int | None, float | None]] = Field(default=[], max_length=50_000)
     tail: dict[str, Any] | None = Field(default=None, max_length=10)   # raw steps/track recorded after an automatic end
     auto_end: dict[str, Any] | None = Field(default=None, max_length=10)

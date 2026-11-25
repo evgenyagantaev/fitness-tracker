@@ -91,6 +91,22 @@ const APPROACH = [0, 100, 100, 1.3], RUN1 = [100, 300, 165, 2.8], DOG = [300, 31
     near(s.pauses[0][1], 360, 8, 'pause end (resume) is unshifted');
   }
 }
+// 10. a manual pause list wins over auto detection and the start back-shift (including «no pauses»)
+{
+  const w = build([APPROACH, RUN1, DOG, RUN2, COOL], 800);
+  const auto = A.analyze(w).seg;
+  w.pause_override = [[310, 400]];
+  const s = A.analyze(w).seg;
+  ok(s.pauses.length === 1 && s.pauses[0][0] === 310 && s.pauses[0][1] === 400, `pause_override used as-is (${JSON.stringify(s.pauses)})`);
+  ok(Math.abs(s.t0 - auto.t0) < 1 && Math.abs(s.t1 - auto.t1) < 1, 'run bounds stay auto when only pauses are overridden');
+  w.pause_override = [];
+  ok(A.analyze(w).seg.pauses.length === 0, 'empty pause_override means no pauses');
+  w.run_override = [150, 600];
+  w.pause_override = [[200, 250], [240, 260]];
+  const o = A.analyze(w).seg;
+  ok(o.src === 'override' && o.t0 === 150 && o.pauses.length === 1 && o.pauses[0][0] === 200 && o.pauses[0][1] === 260,
+    `run + pause overrides combine and merge (${JSON.stringify(o.pauses)})`);
+}
 // 7. beltless flag + derive: no HR blocks
 {
   const w = build([APPROACH, RUN1, RUN2, COOL], 800);

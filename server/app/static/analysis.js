@@ -219,7 +219,8 @@
   const MOTION_STILL_G = 0.04;
   /**
    * Run boundaries. Returns {v, src: 'auto'|'override'|'whole'|'none', t0, t1, approach_s, cooldown_s, pauses, conf, bins}
-   * w: {type, duration_s, step_series, track, motion?, run_override?: [t0|null, t1|null]}
+   * w: {type, duration_s, step_series, track, motion?, run_override?: [t0|null, t1|null], pause_override?: [[t0,t1], ...]}
+   * pause_override, when an array (including empty), replaces auto-detected pauses and is not back-shifted.
    */
   function segment(w, pre) {
     const duration = w.duration_s || 0;
@@ -267,8 +268,20 @@
     }
     out.t0 = Math.round(out.t0 * 10) / 10; out.t1 = Math.round(out.t1 * 10) / 10;
     out.approach_s = Math.round(out.t0); out.cooldown_s = Math.round(Math.max(0, duration - out.t1));
-    out.pauses = findPauses(series, duration, gps, motion, S, out.t0, out.t1);
+    // manual pauses always win: the auto detector (and the 15 s start back-shift) must not move them
+    if (Array.isArray(w.pause_override)) out.pauses = applyPauseOverride(w.pause_override, out.t0, out.t1);
+    else out.pauses = findPauses(series, duration, gps, motion, S, out.t0, out.t1);
     return out;
+  }
+  /** Clip, order and merge a user-supplied pause list; empty means «no pauses». */
+  function applyPauseOverride(raw, t0, t1) {
+    const iv = [];
+    for (const p of raw || []) {
+      if (!p || p.length < 2) continue;
+      const a = Math.max(t0, Math.min(t1, +p[0])), b = Math.max(t0, Math.min(t1, +p[1]));
+      if (isFinite(a) && isFinite(b) && b - a >= 1) iv.push([Math.min(a, b), Math.max(a, b)]);
+    }
+    return mergeIntervals(iv, 0).map((x) => [Math.round(x[0] * 10) / 10, Math.round(x[1] * 10) / 10]);
   }
 
   /**
@@ -754,7 +767,7 @@
     return out;
   }
 
-  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, refinePauseStart, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
+  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, refinePauseStart, applyPauseOverride, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
     cleanRR, hrvStats, hrv, hrvSummary, rPeaks, ecgStats };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.FTAnalysis = api;
 })(typeof window !== 'undefined' ? window : globalThis);
