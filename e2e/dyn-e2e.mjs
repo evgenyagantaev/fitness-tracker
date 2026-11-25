@@ -44,8 +44,29 @@ await page.waitForTimeout(500);
 await (await page.$('#wkDynamics')).screenshot({ path: '../screenshot-dynamics-detail.png' });
 await page.click('.tabs button[data-tab=stats]');
 await page.waitForSelector('#dynTrend:not(.hidden)', { timeout: 15000 });
-await page.waitForTimeout(800);
+await page.waitForFunction(() => window.Chart && Chart.getChart('dynChart') && Chart.getChart('dynCadChart'), null, { timeout: 10000 });
+const trend = await page.evaluate(() => {
+  const d = Chart.getChart('dynChart'), c = Chart.getChart('dynCadChart');
+  const g = d && d.data.datasets.find((x) => x.yAxisID === 'g');
+  return {
+    dynLabels: d ? d.data.datasets.map((x) => x.label) : [],
+    gMin: d && d.options.scales.g.min, gMax: d && d.options.scales.g.max,
+    gData: g ? g.data.filter((v) => v != null) : [],
+    cadTitle: (document.getElementById('dynCadTitle') || {}).textContent,
+    cadAxis: c && c.options.scales.y.title && c.options.scales.y.title.text,
+    cadMin: c && c.options.scales.y.min, cadMax: c && c.options.scales.y.max,
+    cadData: c ? c.data.datasets[0].data.filter((v) => v != null) : [],
+    cadHidden: !!(c && c.data.datasets[0].hidden),
+  };
+});
+ok(!trend.dynLabels.includes('каденс') && trend.dynLabels.includes('время опоры, мс'), 'cadence is not on the cm/% chart: ' + JSON.stringify(trend.dynLabels));
+ok(/Каденс по пробежкам/.test(trend.cadTitle) && trend.cadAxis === 'шаг/мин' && !trend.cadHidden,
+  'cadence has its own visible chart in шаг/мин');
+ok(trend.cadData.length >= 2 && trend.cadData.every((v) => v >= 100 && v <= 250) && (trend.cadMax - trend.cadMin) >= 25,
+  `cadence axis is readable: data ${trend.cadData}, axis ${trend.cadMin}–${trend.cadMax}`);
+ok(trend.gData.length >= 1 && (trend.gMax - trend.gMin) >= 60,
+  `GCT axis has a sensible span: data ${trend.gData}, axis ${trend.gMin}–${trend.gMax}`);
+await page.waitForTimeout(400);
 await (await page.$('#dynTrend')).screenshot({ path: '../screenshot-dynamics-trend.png' });
-ok(true, 'dynamics trend chart in stats');
 await browser.close();
 console.log(process.exitCode ? 'DYN FAILED' : 'DYN PASSED');
