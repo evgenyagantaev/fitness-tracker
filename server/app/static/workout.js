@@ -711,6 +711,7 @@
     ctx.fill(); ctx.stroke();
     ctx.fillStyle = fg; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillText(text, x + padX, top + h / 2 + 0.5);
+    return { x, y: top, w, h };
   }
 
   // Chart.js plugin: marker lines + interactive handles/delete badges/drag preview; pauses are shaded by ftZones when present
@@ -722,7 +723,7 @@
       const { ctx, chartArea: ca } = chart; ctx.save();
       const X = (t) => xs.getPixelForValue(t / 60);
       const hasZones = !!(chart.options && chart.options.plugins && chart.options.plugins.ftZones);
-      if (ed) ed.delHits = [];
+      if (ed) { ed.delHits = []; ed.markerHits = []; }
       const pauses = sg.pauses || [];
       for (let i = 0; i < pauses.length; i++) {
         const [a, b] = pauses[i];
@@ -773,8 +774,10 @@
           if (ed && ed.canEdit) {
             ctx.fillStyle = act ? m.hotCol : m.col;
             ctx.beginPath(); ctx.moveTo(m.x - 5, ca.top); ctx.lineTo(m.x + 5, ca.top); ctx.lineTo(m.x, ca.top + 7); ctx.closePath(); ctx.fill();
+            ed.markerHits.push({ type: m.k, x: m.x - 10, y: ca.top - 4, w: 20, h: 16 });
           }
-          drawPill(ctx, m.txt, m.x, m.y, act ? m.hotCol : m.col, 'rgba(16,16,16,.88)', ca);
+          const pill = drawPill(ctx, m.txt, m.x, m.y, act ? m.hotCol : m.col, 'rgba(16,16,16,.88)', ca);
+          if (ed && ed.canEdit && pill) ed.markerHits.push({ type: m.k, x: pill.x, y: pill.y, w: pill.w, h: pill.h });
         }
       }
       if (ed && ed.drag && ed.drag.kind === 'addPause') {
@@ -886,20 +889,36 @@
     function hitTest(px, py) {
       if (!ed.canEdit) return null;
       const ca = chart.chartArea;
-      if (!ca || px < ca.left - 10 || px > ca.right + 10 || py < ca.top - 6 || py > ca.bottom + 6) return null;
-      for (const b of ed.delHits) if (px >= b.x - 3 && px <= b.x + b.w + 3 && py >= b.y - 3 && py <= b.y + b.h + 3) return { type: 'pauseDel', idx: b.idx };
+      if (!ca || px < ca.left - 16 || px > ca.right + 16 || py < ca.top - 10 || py > ca.bottom + 18) return null;
       const xs = chart.scales.x, X = (t) => xs.getPixelForValue(t / 60);
+      const HIT = 16;
       const cands = [];
       const ps = ed.draft.pauses;
       for (let i = 0; i < ps.length; i++) {
-        cands.push({ type: 'pauseStart', idx: i, d: Math.abs(px - X(ps[i][0])), x: X(ps[i][0]) });
-        cands.push({ type: 'pauseEnd', idx: i, d: Math.abs(px - X(ps[i][1])), x: X(ps[i][1]) });
+        cands.push({ type: 'pauseStart', idx: i, d: Math.abs(px - X(ps[i][0])) });
+        cands.push({ type: 'pauseEnd', idx: i, d: Math.abs(px - X(ps[i][1])) });
       }
-      cands.push({ type: 't0', d: Math.abs(px - X(ed.draft.t0)), x: X(ed.draft.t0) });
-      cands.push({ type: 't1', d: Math.abs(px - X(ed.draft.t1)), x: X(ed.draft.t1) });
-      cands.sort((a, b) => a.d - b.d);
-      if (cands.length && cands[0].d <= 8) return cands[0];
-      return null;
+      cands.push({ type: 't0', d: Math.abs(px - X(ed.draft.t0)) });
+      cands.push({ type: 't1', d: Math.abs(px - X(ed.draft.t1)) });
+      // pills and top handles are full grab targets, even when the click is far from the hairline
+      for (const b of (ed.markerHits || [])) {
+        if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) {
+          const hit = cands.find((c) => c.type === b.type && (b.idx == null || c.idx === b.idx));
+          if (hit) hit.d = Math.min(hit.d, 0);
+        }
+      }
+      const pri = (c) => (c.type === 't0' || c.type === 't1') ? 0 : 1;
+      cands.sort((a, b) => a.d - b.d || pri(a) - pri(b));
+      const marker = (cands.length && cands[0].d <= HIT) ? cands[0] : null;
+      let del = null;
+      for (const b of ed.delHits) {
+        if (px >= b.x - 3 && px <= b.x + b.w + 3 && py >= b.y - 3 && py <= b.y + b.h + 3) { del = { type: 'pauseDel', idx: b.idx }; break; }
+      }
+      // A click on × deletes the pause, even if the pause-end hairline is nearby.
+      // But t0/t1 (or their pills) still win when they overlap the badge at tight zoom.
+      if (del && marker && (marker.type === 't0' || marker.type === 't1')) return marker;
+      if (del) return del;
+      return marker;
     }
 
     function recomputeAutoPauses() {
@@ -958,17 +977,24 @@
       if ($('wkChartHint')) $('wkChartHint').classList.toggle('hidden', !ed.canEdit);
     }
 
-    function syncVisuals() {
+    function paintChart() {
       if (chart.options.plugins.ftZones && window.FTRecoveryUI && window.FTRecoveryUI.sessionZones) {
         chart.options.plugins.ftZones.zones = window.FTRecoveryUI.sessionZones(ed.w, ed.fullMin, ed.fullMax, ed.draft);
       }
+      chart.update('none');
+    }
+    function syncVisuals() {
+      paintChart();
       if (cadChart) {
         cadChart.$seg = Object.assign({}, cadChart.$seg || {}, { t0: ed.draft.t0, t1: ed.draft.t1, pauses: ed.draft.pauses, src: ed.draft.runTouched ? 'override' : ed.draft.src });
         cadChart.update('none');
       }
-      chart.update('none');
-      syncButtons();
-      renderSegControls(ed.w, { t0: ed.draft.t0, t1: ed.draft.t1, pauses: ed.draft.pauses, src: ed.draft.runTouched ? 'override' : ed.draft.src });
+      // Showing Save/Cancel above the chart mid-drag shrinks the canvas (scrollbar) and
+      // Chart.js resize drops pointer capture — the marker then freezes after a tiny move.
+      if (!ed.drag) {
+        syncButtons();
+        renderSegControls(ed.w, { t0: ed.draft.t0, t1: ed.draft.t1, pauses: ed.draft.pauses, src: ed.draft.runTouched ? 'override' : ed.draft.src });
+      }
     }
     ed.syncVisuals = syncVisuals;
     ed.syncButtons = syncButtons;
@@ -1022,11 +1048,12 @@
         syncVisuals(); return;
       }
       if (hit) {
-        ed.drag = { kind: 'marker', target: hit, startPx: px, py };
+        ed.drag = { kind: 'marker', target: hit, startPx: px, py, pointerId: e.pointerId, moved: false };
+        ed.suppressDblClick = true;
         if (hit.type === 'pauseStart' || hit.type === 'pauseEnd') ed.selectedPause = hit.idx;
         chart.options.plugins.tooltip.enabled = false;
         if (chart.tooltip) chart.tooltip.setActiveElements([], { x: 0, y: 0 });
-        syncVisuals(); return;
+        paintChart(); return;
       }
       const ca = chart.chartArea;
       if (!ca || px < ca.left || px > ca.right || py < ca.top || py > ca.bottom) return;
@@ -1044,7 +1071,8 @@
       ed.drag = { kind: 'pan', startPx: px, viewMin0: ed.viewMin, viewMax0: ed.viewMax, moved: false, downSec: secAtPx(px) };
     }, sig);
 
-    canvas.addEventListener('pointermove', (e) => {
+    const onPtrMove = (e) => {
+      if (e._ftEdMove) return; e._ftEdMove = true;
       const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
       if (ed.pts.has(e.pointerId)) ed.pts.set(e.pointerId, { x: px, y: py });
       if (ed.pinch && ed.pts.size >= 2) {
@@ -1078,19 +1106,16 @@
         }
         if (d.kind === 'marker') {
           d.py = py;
+          if (Math.abs(px - d.startPx) > 2) { d.moved = true; ed.suppressDblClick = true; }
           const s = secAtPx(px), dur = Math.floor(ed.w.duration_s || ed.fullMax * 60);
           const t = d.target;
           if (t.type === 't0') {
             ed.draft.t0 = clampSec(s, 0, Math.min(dur - 10, ed.draft.t1 - 10));
             ed.draft.t0Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
-            if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
-            else recomputeAutoPauses();
             updateReadout(ed.draft.t0, 'старт');
           } else if (t.type === 't1') {
             ed.draft.t1 = clampSec(s, ed.draft.t0 + 10, Math.max(ed.draft.t0 + 10, dur));
             ed.draft.t1Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
-            if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
-            else recomputeAutoPauses();
             updateReadout(ed.draft.t1, 'финиш');
           } else if (t.type === 'pauseStart') {
             const p = ed.draft.pauses[t.idx];
@@ -1107,7 +1132,7 @@
               updateReadout(p[1], 'пауза кон.');
             }
           }
-          syncVisuals(); return;
+          paintChart(); return;
         }
       }
       // hover
@@ -1120,7 +1145,8 @@
       } else { ed.hoverSec = null; updateReadout(null); }
       canvas.style.cursor = hit ? (hit.type === 'pauseDel' ? 'pointer' : 'ew-resize') : (ed.mode === 'addPause' || ed.mode === 'zoomBox' ? 'crosshair' : 'grab');
       if (JSON.stringify(prevH) !== JSON.stringify(hit)) chart.update('none');
-    }, sig);
+    };
+    canvas.addEventListener('pointermove', onPtrMove, sig);
 
     const endPtr = (e) => {
       ed.pts.delete(e.pointerId);
@@ -1154,6 +1180,11 @@
         } else { chart.update('none'); syncButtons(); }
         return;
       }
+      if (d.kind === 'marker' || (d.kind === 'pan' && d.moved)) {
+        ed.suppressDblClick = true;
+        clearTimeout(ed.suppressT);
+        ed.suppressT = setTimeout(() => { ed.suppressDblClick = false; }, 450);
+      }
       if (d.kind === 'marker') {
         if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
         else recomputeAutoPauses();
@@ -1161,13 +1192,27 @@
       }
     };
     canvas.addEventListener('pointerup', endPtr, sig);
-    canvas.addEventListener('pointercancel', endPtr, sig);
+    // Canvas resize (Save row / scrollbar) can fire pointercancel and drop capture mid-drag.
+    // Keep the drag alive and re-attach capture; window pointerup will finish it.
+    canvas.addEventListener('pointercancel', (e) => {
+      if (ed.drag) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} return; }
+      endPtr(e);
+    }, sig);
+    canvas.addEventListener('lostpointercapture', (e) => {
+      if (ed.drag) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+    }, sig);
     canvas.addEventListener('pointerleave', () => {
       if (!ed.drag) { ed.hover = null; ed.hoverSec = null; updateReadout(null); chart.update('none'); }
     }, sig);
+    window.addEventListener('pointermove', (e) => { if (ed.drag) onPtrMove(e); }, sig);
+    window.addEventListener('pointerup', (e) => { if (ed.drag) endPtr(e); }, sig);
 
     canvas.addEventListener('dblclick', (e) => {
       if (!ed.canEdit) return;
+      if (ed.suppressDblClick) { ed.suppressDblClick = false; return; }
+      // Plain dblclick was stealing start-marker drags (a second click after a failed grab).
+      // Only add a 10 s pause with Shift or while «+ Пауза» is armed.
+      if (ed.mode !== 'addPause' && !e.shiftKey) return;
       const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top, ca = chart.chartArea;
       if (!ca || px < ca.left || px > ca.right || py < ca.top || py > ca.bottom) return;
       if (hitTest(px, py)) return;

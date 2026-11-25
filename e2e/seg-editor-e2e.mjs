@@ -190,12 +190,21 @@ await page.waitForTimeout(80);
 info = await getChartInfo();
 ok(info.draft.pauses.length === 2, `added 2nd pause via drag (${JSON.stringify(info.draft.pauses)})`);
 
-// Add 3rd pause via dblclick at 440s, then delete it via chart × badge
+// Plain dblclick in the run must NOT add a pause (it was stealing start-marker drags)
 const x440 = await page.evaluate(() => { const ch = Chart.getChart('wkChart'); return ch.canvas.getBoundingClientRect().left + ch.scales.x.getPixelForValue(440 / 60); });
+const pausesBeforePlain = info.draft.pauses.length;
 await page.mouse.dblclick(x440, info.midY);
 await page.waitForTimeout(80);
 info = await getChartInfo();
-ok(info.draft.pauses.length === 3, `added 3rd pause via dblclick (${JSON.stringify(info.draft.pauses)})`);
+ok(info.draft.pauses.length === pausesBeforePlain, `plain dblclick did not add a pause (${JSON.stringify(info.draft.pauses)})`);
+
+// Add 3rd pause via Shift+dblclick at 440s, then delete it via chart × badge
+await page.keyboard.down('Shift');
+await page.mouse.dblclick(x440, info.midY);
+await page.keyboard.up('Shift');
+await page.waitForTimeout(80);
+info = await getChartInfo();
+ok(info.draft.pauses.length === 3, `added 3rd pause via Shift+dblclick (${JSON.stringify(info.draft.pauses)})`);
 const delHit = info.delHits[2];
 ok(!!delHit, '3rd pause has × delete badge on chart');
 if (delHit) {
