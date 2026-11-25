@@ -126,5 +126,22 @@ const APPROACH = [0, 100, 100, 1.3], RUN1 = [100, 300, 165, 2.8], DOG = [300, 31
   Object.assign(x, d);
   near(A.runBounds(x)[1], 700, 12, 'runBounds end'); near(A.runBounds(x)[0], 100, 12, 'runBounds start');
 }
+// 9. a manual pause that still has steps/GPS must not blow up speed or cadence charts
+{
+  const w = build([[0, 200, 165, 2.8], [200, 312, 150, 2.2], [312, 700, 165, 2.8]], 700, { lagFirst: 1 });
+  w.run_override = [0, 700];
+  w.pause_override = [[200, 312]];
+  const a = A.analyze(w);
+  const speeds = a.segments.map(([t0, t1, n, dm, gm, mv]) => dm / mv * 3.6);
+  const gpsSpeeds = a.segments.filter((sg) => sg[4] != null).map(([t0, t1, n, dm, gm, mv]) => gm / mv * 3.6);
+  ok(speeds.every((v) => v < 20), `no 300 km/h step-speed spikes after a stepping pause (max ${Math.max(0, ...speeds).toFixed(1)} km/h)`);
+  ok(!gpsSpeeds.length || gpsSpeeds.every((v) => v < 20), `no 300 km/h GPS-speed spikes (max ${gpsSpeeds.length ? Math.max(...gpsSpeeds).toFixed(1) : 0} km/h)`);
+  ok(a.segments.every(([t0, t1]) => t1 <= 201 || t0 >= 311), `100-step segments stay outside the pause (${JSON.stringify(a.segments.filter(([t0, t1]) => t0 < 312 && t1 > 200))})`);
+  const spikes = a.cadence.filter(([, c]) => c > 220);
+  ok(spikes.length === 0, `cadence has no 400 spm spikes at pause edges (${JSON.stringify(spikes)})`);
+  near(a.cadence_avg, 165, 8, 'avg cadence ignores steps inside the pause');
+  near(a.gps_distance_m, 2.8 * (200 + 388), 80, 'GPS distance excludes the pause');
+  near(a.steps_run, 165 * (200 + 388) / 60, 40, 'steps_run excludes pause steps');
+}
 console.log(fails ? `${fails} FAILED` : 'ALL OK');
 process.exit(fails ? 1 : 0);

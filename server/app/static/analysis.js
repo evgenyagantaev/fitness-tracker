@@ -76,6 +76,29 @@
     return out;
   }
   function stoppedWithin(stops, t0, t1) { let s = 0; for (const [a, b] of stops) s += Math.max(0, Math.min(b, t1) - Math.max(a, t0)); return s; }
+  /** run intervals with pauses cut out, in order */
+  function movingIntervals(t0, t1, stops) {
+    const iv = [];
+    let from = t0;
+    for (const [a, b] of stops) {
+      if (b <= t0 || a >= t1) continue;
+      const lo = Math.max(a, t0), hi = Math.min(b, t1);
+      if (lo > from) iv.push([from, lo]);
+      from = Math.max(from, hi);
+    }
+    if (t1 > from) iv.push([from, t1]);
+    return iv;
+  }
+  /** change in a monotone [[t, v]] curve over the parts of [t0, t1] that fall inside pauses */
+  function deltaWithin(curve, stops, t0, t1) {
+    let s = 0;
+    if (!curve || !curve.length) return 0;
+    for (const [a, b] of stops) {
+      const lo = Math.max(a, t0), hi = Math.min(b, t1);
+      if (hi > lo) s += at(curve, hi) - at(curve, lo);
+    }
+    return s;
+  }
 
   function crossTime(series, target) {   // time when cumulative steps reach `target`
     for (let i = 0; i < series.length; i++) {
@@ -297,7 +320,8 @@
     const R0 = seg.t0, R1 = seg.t1, runLen = Math.max(0, R1 - R0);
     const stops = seg.pauses;
     const S = stepsFn(series, duration);
-    const stepsRun = series.length ? Math.max(0, Math.round((S(R1) != null ? S(R1) : 0) - (S(R0) != null ? S(R0) : 0))) : steps;
+    const stepsSpan = series.length ? Math.max(0, (S(R1) != null ? S(R1) : 0) - (S(R0) != null ? S(R0) : 0)) : steps;
+    const stepsRun = series.length ? Math.max(0, Math.round(stepsSpan - deltaWithin(series, stops, R0, R1))) : steps;
     const stop_s = Math.round(stops.reduce((x, [a, b]) => x + (b - a), 0));
     const moving_s = Math.max(0, Math.round(runLen - stop_s));
     const step_distance_m = Math.round(stepsRun * stride);
@@ -309,36 +333,49 @@
     const coverage = duration > 0 ? Math.min(1, covered / Math.max(1, duration)) : 0;
     const gps_acc = goodAcc.length ? Math.round(median(goodAcc) * 10) / 10 : null;
     const gps_total_m = gps.good.length >= 2 ? Math.round(gps.dist) : null;
-    const gps_distance_m = gps.good.length >= 2 ? Math.round(Math.max(0, at(gps.curve, R1) - at(gps.curve, R0))) : null;
+    const gps_distance_m = gps.good.length >= 2 ? Math.round(Math.max(0, at(gps.curve, R1) - at(gps.curve, R0) - deltaWithin(gps.curve, stops, R0, R1))) : null;
     const gps_ok = gps.good.length >= 30 && coverage >= 0.8 && gps_acc !== null && gps_acc <= 20 && (gps_total_m || 0) >= 200;
 
-    // 100-step segments over the run: [t_start, t_end, steps, dist_by_steps_m, dist_gps_m|null, moving_s]
+    // 100-step segments over moving parts of the run only (a pause must not become a 300 km/h block)
+    // [t_start, t_end, steps, dist_by_steps_m, dist_gps_m|null, moving_s]
     const segments = [];
     if (series.length) {
-      const sR0 = S(R0) != null ? S(R0) : 0;
-      let prevT = R0, prevS = sR0;
-      for (let k = Math.floor(sR0 / SEG_STEPS) * SEG_STEPS + SEG_STEPS; k <= (S(R1) != null ? S(R1) : 0); k += SEG_STEPS) {
-        const t = crossTime(series, k); if (t === null || t > R1) break;
-        if (k - prevS >= 30) segments.push(seg100(prevT, t, Math.round(k - prevS)));
-        prevT = t; prevS = k;
+      for (const [a, b] of movingIntervals(R0, R1, stops)) {
+        const sA = S(a) != null ? S(a) : 0;
+        const sB = S(b) != null ? S(b) : sA;
+        if (sB - sA < 30 || b <= a) continue;
+        let prevT = a, prevS = sA;
+        for (let k = Math.floor(sA / SEG_STEPS) * SEG_STEPS + SEG_STEPS; k <= sB; k += SEG_STEPS) {
+          const t = crossTime(series, k);
+          if (t == null || t > b + 0.05) break;
+          if (t < a - 0.05) continue;
+          const tClamped = Math.min(b, Math.max(a, t));
+          if (k - prevS >= 30) segments.push(seg100(prevT, tClamped, Math.round(k - prevS)));
+          prevT = tClamped; prevS = k;
+        }
+        if (sB - prevS >= 30 && b > prevT) segments.push(seg100(prevT, b, Math.round(sB - prevS)));
       }
-      const sR1 = S(R1) != null ? S(R1) : prevS;
-      if (sR1 - prevS >= 30 && R1 > prevT) segments.push(seg100(prevT, R1, Math.round(sR1 - prevS)));
     }
     function seg100(t0, t1, n) {
-      const mv = Math.max(1, (t1 - t0) - stoppedWithin(stops, t0, t1));
-      const g = gps.curve.length >= 2 && gps_ok ? Math.round((at(gps.curve, t1) - at(gps.curve, t0)) * 10) / 10 : null;
+      const mv = Math.max(0.1, (t1 - t0) - stoppedWithin(stops, t0, t1));
+      const g = gps.curve.length >= 2 && gps_ok
+        ? Math.round(Math.max(0, (at(gps.curve, t1) - at(gps.curve, t0)) - deltaWithin(gps.curve, stops, t0, t1)) * 10) / 10
+        : null;
       return [Math.round(t0 * 10) / 10, Math.round(t1 * 10) / 10, n, Math.round(n * stride * 10) / 10, g, Math.round(mv * 10) / 10];
     }
 
-    // cadence profile (steps/min) every 10 s over a 30 s window; 0 while stopped
+    // cadence profile (steps/min) every 10 s over a 30 s window; 0 while stopped.
+    // Only steps outside pauses go into the rate, otherwise a short pause on the edge of the window inflates cadence to 400+.
     const cadence = [];
     if (series.length) {
       const stepsAt = (t) => { if (t <= series[0][0]) return t < series[0][0] ? Math.min(series[0][1], 0) : series[0][1]; return Math.round(at(series, t)); };
       for (let t = 30; t <= duration; t += 10) {
         const stopped = stoppedWithin(stops, t - 30, t);
         const n = stepsAt(t) - stepsAt(t - 30);
-        cadence.push([t, stopped >= 20 ? 0 : Math.round(n * 60 / Math.max(10 / 1, 30 - stopped))]);
+        const nPause = Math.round(deltaWithin(series, stops, t - 30, t));
+        const nMov = Math.max(0, n - nPause);
+        const movingWin = 30 - stopped;
+        cadence.push([t, stopped >= 20 || movingWin < 10 ? 0 : Math.round(nMov * 60 / Math.max(10 / 1, movingWin))]);
       }
     }
     // step-counter start lag: the first event can arrive 15–20 s after «Старт»; steps before it are lost except the few it
@@ -734,7 +771,7 @@
     return best;
   }
 
-  const ANALYSIS_V = 5;   // v1.8.2: pause starts are back-searched to the real stop (not the live-detector delay)
+  const ANALYSIS_V = 6;   // profiles, run distance and avg cadence skip steps/GPS inside pauses (no 300 km/h spikes)
   /**
    * Derived (re-computable) fields of a workout; raw data (samples, step_series, track, session_*) is never changed.
    * @param list all workouts (for back-to-back detection; previous ones should already be derived)
