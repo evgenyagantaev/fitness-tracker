@@ -408,6 +408,11 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
         return {"data": (d / "data.bin").stat().st_size if (d / "data.bin").exists() else 0,
                 "frames": (d / "frames.csv").stat().st_size if (d / "frames.csv").exists() else 0}
 
+    def _seg_key(w: dict | None) -> str:
+        sg = (w or {}).get("seg") or {}
+        ps = ",".join(f"{x[0]}-{x[1]}" for x in (sg.get("pauses") or []) if isinstance(x, (list, tuple)) and len(x) >= 2)
+        return f"{sg.get('t0')}:{sg.get('t1')}:{ps}:{sg.get('src')}"
+
     def analyze_acc(aid: str, meta: dict, workout_id: str | None) -> dict:
         d = acc_dir(aid)
         w = db.get_workout(workout_id) if workout_id else None
@@ -417,8 +422,7 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
             res = dynamics.analyze((d / "data.bin").read_bytes(), (d / "frames.csv").read_text(), meta, w)
             if meta.get("partial"):
                 res["partial"] = meta["partial"]
-            sg = (w or {}).get("seg") or {}
-            res["seg_key"] = f"{sg.get('t0')}:{sg.get('t1')}:{len(sg.get('pauses') or [])}:{sg.get('src')}"
+            res["seg_key"] = _seg_key(w)
             return res
         except Exception as e:  # noqa: BLE001
             return {"v": dynamics.DYN_V, "ok": False, "reason": f"ошибка анализа: {e}"}
@@ -500,8 +504,7 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
             r = a["result"]
         phone = a["meta"].get("source") == "phone"
         w_now = db.get_workout(wid) or {}
-        sg = w_now.get("seg") or {}
-        seg_key = f"{sg.get('t0')}:{sg.get('t1')}:{len(sg.get('pauses') or [])}:{sg.get('src')}"
+        seg_key = _seg_key(w_now)
         if phone:
             if reanalyze or r.get("v") != phone_motion.PHONE_V:
                 a = db.upsert_acc({**a, "result": analyze_acc(a["id"], a["meta"], wid)})

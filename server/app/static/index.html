@@ -130,7 +130,30 @@
           <div id="wkQualityNote" class="quality-note hidden"></div>
           <div id="wkDynamics" class="hidden"></div>
           <h4 class="sub" id="wkHrTitle">Пульс</h4>
-          <div class="chart-box"><canvas id="wkChart"></canvas></div>
+          <div id="wkChartBar" class="chart-bar web-only hidden">
+            <div class="chart-bar-grp">
+              <button id="wkZIn" class="btn" type="button" title="Приблизить">+</button>
+              <button id="wkZOut" class="btn" type="button" title="Отдалить">−</button>
+              <button id="wkZRun" class="btn" type="button" title="Приблизить к бегу">Бег</button>
+              <button id="wkZReset" class="btn" type="button" title="Показать всю запись">Всё</button>
+              <button id="wkZBox" class="btn" type="button" title="Выделить участок мышкой для зума">🔍 Участок</button>
+            </div>
+            <div class="chart-bar-grp">
+              <button id="wkAddPause" class="btn" type="button" title="Выделить паузу мышкой на графике">+ Пауза</button>
+              <span id="wkCursorReadout" class="small muted"></span>
+            </div>
+            <div class="chart-bar-grp chart-bar-save">
+              <button id="wkSegSave" class="btn primary hidden" type="button">Сохранить</button>
+              <button id="wkSegCancel" class="btn hidden" type="button">Отменить</button>
+              <button id="wkSegReset" class="btn hidden" type="button">Вернуть авто</button>
+              <span id="wkSegStatus" class="small muted"></span>
+            </div>
+          </div>
+          <div class="chart-box tall" id="wkChartBox"><canvas id="wkChart"></canvas></div>
+          <div id="wkChartFoot" class="chart-foot web-only hidden">
+            <div id="wkPauseChips" class="pause-chips"></div>
+            <div id="wkChartHint" class="small muted">Колесо мыши / 2 пальца — зум · фон — панорама · перетащи линии старта, финиша или края пауз · Shift+выделение или двойной клик в беге — добавить паузу · × — удалить паузу</div>
+          </div>
           <h4 class="sub">Скорость по отрезкам в 100 шагов</h4>
           <div class="chart-box"><canvas id="wkSpeedChart"></canvas></div>
           <h4 class="sub">Каденс</h4>

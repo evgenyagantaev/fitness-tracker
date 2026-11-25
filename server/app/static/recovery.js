@@ -8,6 +8,7 @@
   let items = [], pickId = null, mode = 'abs';
   const TYPES = { run: 'Бег', walk: 'Ходьба', workout: 'Тренировка' };
   const fmtDur = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+  const fmtSigned = (s) => { s = Math.round(s); return (s < 0 ? '−' : '') + fmtDur(Math.abs(s)); };
   const round = (v) => (v == null ? '—' : Math.round(v));
   const when = (t) => new Date(t).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
@@ -19,20 +20,64 @@
     beforeDatasetsDraw(c, _a, opts) {
       const { ctx, chartArea: ca, scales: { x } } = c; if (!opts || !opts.zones) return;
       ctx.save();
+      ctx.beginPath(); ctx.rect(ca.left, ca.top, ca.right - ca.left, ca.bottom - ca.top); ctx.clip();
+      ctx.font = '11px Arial';
       for (const z of opts.zones) {
         const x0 = Math.max(ca.left, x.getPixelForValue(z.from)), x1 = Math.min(ca.right, x.getPixelForValue(z.to));
         if (x1 <= x0) continue;
         ctx.fillStyle = z.color; ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top);
-        if (z.label) { ctx.fillStyle = z.labelColor || '#999'; ctx.font = '11px Arial'; ctx.fillText(z.label, x0 + 4, ca.top + (z.labelY || 12)); }
+        // draw the label only when the zone is wide enough on screen (and clear of avoided pause bands/badges)
+        if (z.label) {
+          const tw = ctx.measureText(z.label).width;
+          let lx = x0 + 4, fit = x1 - x0 >= tw + 8;
+          if (fit && z.avoid && z.avoid.length) {
+            let spans = [[x0, x1]];
+            for (const av of z.avoid) {
+              const ax0 = x.getPixelForValue(av[0]), ax1 = Math.max(x.getPixelForValue(av[1]), ax0 + 20);
+              const next = [];
+              for (const [s0, s1] of spans) {
+                if (ax1 <= s0 || ax0 >= s1) { next.push([s0, s1]); continue; }
+                if (ax0 - s0 > 2) next.push([s0, ax0 - 2]);
+                if (s1 - ax1 > 4) next.push([ax1 + 4, s1]);
+              }
+              spans = next;
+            }
+            const pick = spans.find(([s0, s1]) => s1 - s0 >= tw + 10);
+            if (pick) lx = pick[0] + 4;
+            else fit = false;
+          }
+          if (fit) { ctx.fillStyle = z.labelColor || '#999'; ctx.fillText(z.label, lx, ca.top + (z.labelY || 12)); }
+        }
       }
       ctx.restore();
     },
   };
 
+  function sessionZones(w, xmin, xmax, segOv) {
+    const sg = segOv || w.seg || {};
+    const RS = segOv ? segOv.t0 : A.runBounds(w)[0];
+    const D = segOv ? segOv.t1 : A.runBounds(w)[1];
+    const pauses = (segOv ? segOv.pauses : sg.pauses) || [];
+    const mask = (w.quality && w.quality.mask) || [];
+    const zones = [];
+    if (xmin < 0) zones.push({ from: xmin, to: 0, color: 'rgba(150,150,150,.10)', label: 'до старта' });
+    if (RS > 3) zones.push({ from: 0, to: RS / 60, color: 'rgba(200,200,120,.12)', label: 'подход' });
+    if (D > RS) zones.push({ from: RS / 60, to: D / 60, color: 'rgba(57,211,83,.08)', label: 'бег', avoid: pauses.map((p) => [p[0] / 60, p[1] / 60]) });
+    if (xmax > D / 60 + 0.02) zones.push({ from: D / 60, to: xmax, color: 'rgba(63,167,255,.12)', label: 'отход и восстановление' });
+    for (let i = 0; i < pauses.length; i++) {
+      const m = pauses[i];
+      zones.push({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,170,40,.28)', label: i === 0 ? 'пауза' : '', labelY: 40, labelColor: '#ffb020' });
+    }
+    for (let i = 0; i < mask.length; i++) {
+      const m = mask[i];
+      zones.push({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,60,60,.18)', label: i === 0 ? 'помехи' : '', labelY: 26, labelColor: '#ff8080' });
+    }
+    return zones;
+  }
+
   /** Full HR session of a workout: before / run / recovery, x = minutes from the start. */
   function sessionChart(canvas, w) {
-    const [RS, D] = A.runBounds(w), cut = w.tail_cut != null ? w.tail_cut : Infinity;
-    const pauses = (w.seg && w.seg.pauses) || [];
+    const [, D] = A.runBounds(w), cut = w.tail_cut != null ? w.tail_cut : Infinity;
     const ss = (w.session_samples || []).filter((p) => p[0] < cut);
     const mask = (w.quality && w.quality.mask) || [];
     const isM = (t) => mask.some((m) => t >= m[0] && t <= m[1]);
@@ -46,14 +91,11 @@
     return new Chart(canvas, {
       type: 'line', data: { datasets: ds }, plugins: [zonesPlugin],
       options: { maintainAspectRatio: false, animation: false, parsing: false,
-        plugins: { legend: { display: false }, ftZones: { zones: [
-          { from: xmin, to: 0, color: 'rgba(150,150,150,.10)', label: 'до старта' },
-          ...(RS > 3 ? [{ from: 0, to: RS / 60, color: 'rgba(200,200,120,.12)', label: 'подход' }] : []),
-          { from: RS / 60, to: D / 60, color: 'rgba(57,211,83,.08)', label: 'бег' },
-          { from: D / 60, to: xmax, color: 'rgba(63,167,255,.12)', label: 'отход и восстановление' }]
-          .concat(pauses.map((m, i) => ({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,170,40,.28)', label: i === 0 ? 'пауза' : '', labelY: 40, labelColor: '#ffb020' })))
-          .concat(mask.map((m, i) => ({ from: m[0] / 60, to: m[1] / 60, color: 'rgba(255,60,60,.18)', label: i === 0 ? 'помехи' : '', labelY: 26, labelColor: '#ff8080' }))) } },
-        scales: { x: { type: 'linear', min: xmin, max: xmax, title: { display: true, text: 'минуты от старта' } }, y: { suggestedMin: 50, suggestedMax: 180 } } },
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { title: (items) => items.length ? fmtSigned(items[0].parsed.x * 60) : '', label: (c) => `${c.dataset.label}: ${Math.round(c.parsed.y)}` } },
+          ftZones: { zones: sessionZones(w, xmin, xmax) } },
+        scales: { x: { type: 'linear', min: xmin, max: xmax, title: { display: true, text: 'время от старта' }, ticks: { callback: (v) => fmtSigned(v * 60) } }, y: { suggestedMin: 50, suggestedMax: 180 } } },
     });
   }
 
@@ -282,6 +324,6 @@
       mode = b.dataset.mode; document.querySelectorAll('#recModeSeg button').forEach((x) => x.classList.toggle('active', x === b)); renderOverlay();
     }));
   }
-  window.FTRecoveryUI = { sessionChart, metricsHtml, hints, zonesPlugin };
+  window.FTRecoveryUI = { sessionChart, sessionZones, metricsHtml, hints, zonesPlugin };
   window.FTRecovery = { refresh };
 })();

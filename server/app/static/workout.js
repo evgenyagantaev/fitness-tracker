@@ -578,18 +578,33 @@
     if (Date.now() - lastChartAt > 3000) { lastChartAt = Date.now(); drawChart('liveChart', active.samples, true); }
   }
 
-  function drawChart(canvasId, samples, live) {
+  const fmtSigned = (sec) => { sec = Math.round(sec); return (sec < 0 ? '−' : '') + fmtDur(Math.abs(sec)); };
+
+  function drawChart(canvasId, samples, live, durationS) {
     if (!window.Chart) return;
     const data = samples.map((s) => ({ x: s[0] / 60, y: s[1] }));
     const existing = canvasId === 'liveChart' ? liveChart : detailChart;
-    if (existing) { existing.data.datasets[0].data = data; existing.update('none'); return; }
+    if (existing) { existing.data.datasets[0].data = data; existing.update('none'); return existing; }
+    const xmax = live ? undefined : Math.max((durationS || 0) / 60, data.length ? data[data.length - 1].x : 1);
+    const plugins = !live && window.FTRecoveryUI && window.FTRecoveryUI.zonesPlugin ? [window.FTRecoveryUI.zonesPlugin] : [];
     const ch = new Chart($(canvasId), {
-      type: 'line',
+      type: 'line', plugins,
       data: { datasets: [{ label: 'Пульс', data, borderColor: '#ff4d4d', backgroundColor: 'rgba(255,77,77,.15)', fill: true, pointRadius: 0, borderWidth: 2, tension: 0.2 }] },
-      options: { maintainAspectRatio: false, animation: false, parsing: false, plugins: { legend: { display: false } },
-        scales: { x: { type: 'linear', title: { display: !live, text: 'минуты' }, ticks: { callback: (v) => Math.round(v * 10) / 10 } }, y: { suggestedMin: 60, suggestedMax: 180 } } },
+      options: { maintainAspectRatio: false, animation: false, parsing: false,
+        interaction: live ? undefined : { mode: 'nearest', axis: 'x', intersect: false },
+        plugins: { legend: { display: false },
+          ...(live ? {} : {
+            tooltip: { callbacks: { title: (items) => items.length ? fmtSigned(items[0].parsed.x * 60) : '', label: (c) => `Пульс: ${Math.round(c.parsed.y)}` } },
+            ftZones: { zones: [] },
+          }) },
+        scales: {
+          x: { type: 'linear', ...(live ? {} : { min: 0, max: xmax }), title: { display: !live, text: live ? 'минуты' : 'время от старта' },
+            ticks: { callback: (v) => live ? Math.round(v * 10) / 10 : fmtSigned(v * 60) } },
+          y: { suggestedMin: 60, suggestedMax: 180 },
+        } },
     });
     if (canvasId === 'liveChart') liveChart = ch; else detailChart = ch;
+    return ch;
   }
 
   // ---------------- list & detail ----------------
@@ -608,18 +623,27 @@
     el.querySelectorAll('.wk-item').forEach((it) => it.addEventListener('click', () => openDetail(it.dataset.id)));
   }
 
-  async function openDetail(id) {
+  let savedChartView = null;   // { id, min, max } — preserved while editing/saving the same workout
+  let wkEditor = null;
+
+  async function openDetail(id, opts) {
     let w = Store.workouts()[id]; if (!w) return;
     detailId = id;
     const empty = (k) => !w[k] || !w[k].length;
     if (w.samples_trimmed || (empty('samples') && empty('step_series') && empty('track'))) {
-      try { const full = await api('api/workouts/' + id); if (full) w = Object.assign({}, w, { samples: full.samples || [], step_series: full.step_series || [], track: full.track || [], segments: full.segments || [], session_samples: full.session_samples || [], session_rr: full.session_rr || [], motion: full.motion || [], tail: full.tail || null }); } catch (e) { /* offline */ }
+      try {
+        const full = await api('api/workouts/' + id);
+        if (full) {
+          w = Object.assign({}, w, { samples: full.samples || [], step_series: full.step_series || [], track: full.track || [], segments: full.segments || [], session_samples: full.session_samples || [], session_rr: full.session_rr || [], motion: full.motion || [], tail: full.tail || null });
+          delete w.samples_trimmed;
+        }
+      } catch (e) { /* offline */ }
     }
     if ((w.analysis_v || 0) < A.ANALYSIS_V) w = Object.assign({}, w, derived(w));   // older records: derived analytics on the fly
     const an = A.analyze(w);   // recompute profiles (also for workouts recorded before v1.3)
     const q = w.quality || null;
     const QL = { good: ['хорошее', 'q-good'], fair: ['среднее', 'q-fair'], poor: ['плохое', 'q-poor'] };
-    const moving = w.moving_s || an.moving_s, stops = w.moving_s != null ? w.stops : an.stops, stopS = w.moving_s != null ? w.stop_s : an.stop_s;
+    const moving = w.moving_s != null ? w.moving_s : an.moving_s, stops = w.moving_s != null ? w.stops : an.stops, stopS = w.moving_s != null ? w.stop_s : an.stop_s;
     const pace = (m) => m > 50 && moving > 0 ? fmtDur(moving / (m / 1000)) + ' мин/км' : '—';
     const stepDist = w.step_distance_m != null ? w.step_distance_m : Math.round((w.steps || 0) * (w.stride_m || 0.75));
     const d = new Date(w.started_at);
@@ -627,7 +651,8 @@
     const gpsTxt = w.gps_distance_m != null ? (w.gps_distance_m / 1000).toFixed(2) + ' км' + (w.gps_ok ? '' : ' (слабый сигнал)') : '—';
     const seg = w.seg || an.seg, beltless = !!w.beltless;
     const segRu = { auto: 'найден по данным', override: 'поправлен вручную', none: 'бег не найден — вся запись', whole: '' };
-    const segRows = seg && seg.src !== 'whole' ? [['Подход · бег · отход', `${fmtDur(seg.approach_s)} · <span class="seg-run">${fmtDur(seg.run_s)}</span> · ${fmtDur(seg.cooldown_s)} <span class="muted small">(${segRu[seg.src] || ''}${seg.conf && seg.src === 'auto' ? ', уверенность ' + ({ high: 'высокая', medium: 'средняя', low: 'низкая' }[seg.conf] || seg.conf) : ''})</span>`]] : [];
+    const pauseOvNote = Array.isArray(w.pause_override) && seg.src !== 'override' ? ', паузы вручную' : '';
+    const segRows = seg && seg.src !== 'whole' ? [['Подход · бег · отход', `${fmtDur(seg.approach_s)} · <span class="seg-run">${fmtDur(seg.run_s)}</span> · ${fmtDur(seg.cooldown_s)} <span class="muted small">(${segRu[seg.src] || ''}${pauseOvNote}${seg.conf && seg.src === 'auto' ? ', уверенность ' + ({ high: 'высокая', medium: 'средняя', low: 'низкая' }[seg.conf] || seg.conf) : ''})</span>`]] : [];
     $('wkDetailStats').innerHTML = [
       ['Время общее', fmtDur(w.duration_s)], ...segRows, ['В движении', fmtDur(moving)], ['Остановки', stops ? `${stops}, ${fmtDur(stopS)}` : 'нет'],
       ['Дистанция', (w.distance_m / 1000).toFixed(2) + ' км' + (w.gps_ok ? ' (GPS)' : ' (по шагам)')],
@@ -640,13 +665,13 @@
       ['Длина шага', (w.stride_m || 0.75) + ' м' + (w.stride_source === 'auto' ? ' (калибровка)' : '')],
       ['Шаг по GPS', w.gps_stride_m ? w.gps_stride_m.toFixed(2) + ' м' : '—'], ['Устройство', beltless ? 'без пояса (шагомер и акселерометр телефона)' : (w.device || '—')],
     ].map(([k, v]) => `<div>${k}: <b>${v}</b></div>`).join('') + (beltless ? '<div class="small muted">Пробежка без пояса: пульса, восстановления и беговой динамики нет.</div>' : '');
-    renderSegControls(w, seg);
     $('wkDetail').classList.remove('hidden');
     if (detailChart) { detailChart.destroy(); detailChart = null; }
+    destroyChartEditor();
     const hasHr = !beltless && ((w.session_samples && w.session_samples.length) || (w.samples && w.samples.length));
-    $('wkHrTitle').classList.toggle('hidden', !hasHr); $('wkChart').parentElement.classList.toggle('hidden', !hasHr);
+    $('wkHrTitle').classList.toggle('hidden', !hasHr); $('wkChartBox').classList.toggle('hidden', !hasHr);
     if (hasHr && w.session_samples && w.session_samples.length) { detailChart = window.FTRecoveryUI.sessionChart($('wkChart'), w); $('wkHrTitle').textContent = 'Пульс: до старта, подход, бег, восстановление'; }
-    else if (hasHr) { drawChart('wkChart', w.samples || [], false); $('wkHrTitle').textContent = 'Пульс'; }
+    else if (hasHr) { drawChart('wkChart', w.samples || [], false, w.duration_s); $('wkHrTitle').textContent = 'Пульс'; }
     const rv = !beltless && w.session_samples && w.session_samples.length ? A.recovery(w) : null;
     const hv = rv && w.session_rr && w.session_rr.length ? A.hrv(w) : null;
     $('wkRecovery').innerHTML = rv ? window.FTRecoveryUI.metricsHtml(rv) + (hv && (hv.pre || hv.post5_10) ? '<div class="rec-metrics">' +
@@ -664,59 +689,610 @@
     }
     drawProfiles(w, an);
     if (cadChart) markSeg(cadChart, seg);
-    if (detailChart) markSeg(detailChart, seg);
+    if (detailChart) {
+      if (!isNative) initChartEditor(w, an, detailChart, seg);
+      else markSeg(detailChart, seg);
+    }
+    renderSegControls(w, seg);
     if (window.FTDyn) window.FTDyn.show(w, beltless);
     drawMap(w.track || []);
-    $('wkDetail').scrollIntoView({ behavior: 'smooth' });
+    if (!(opts && opts.keepScroll)) $('wkDetail').scrollIntoView({ behavior: 'smooth' });
   }
 
-  // ---------------- run boundaries on charts + manual adjust ----------------
-  // Chart.js plugin: dashed lines at the run start / end, orange bands for pauses (x axis in minutes from «Старт»)
+  // ---------------- run boundaries on charts + interactive web editor ----------------
+  function drawPill(ctx, text, cx, y, fg, bg, ca) {
+    ctx.font = 'bold 11px Arial';
+    const padX = 5, h = 16, w = Math.ceil(ctx.measureText(text).width) + padX * 2;
+    const x = Math.max(ca.left + 2, Math.min(ca.right - w - 2, Math.round(cx - w / 2)));
+    const top = y - h;
+    ctx.fillStyle = bg; ctx.strokeStyle = fg; ctx.lineWidth = 1;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, top, w, h, 4); else ctx.rect(x, top, w, h);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = fg; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + padX, top + h / 2 + 0.5);
+  }
+
+  // Chart.js plugin: marker lines + interactive handles/delete badges/drag preview; pauses are shaded by ftZones when present
   function ensureSegPlugin() {
     if (!window.Chart || window.Chart.registry.plugins.get('ftSegBands')) return;
     window.Chart.register({ id: 'ftSegBands', afterDatasetsDraw(chart) {
-      const sg = chart.$seg, xs = chart.scales && chart.scales.x; if (!sg || !xs) return;
+      const ed = chart.$editor, sg = ed ? ed.draft : chart.$seg, xs = chart.scales && chart.scales.x;
+      if (!sg || !xs) return;
       const { ctx, chartArea: ca } = chart; ctx.save();
       const X = (t) => xs.getPixelForValue(t / 60);
-      for (const [a, b] of sg.pauses || []) { ctx.fillStyle = 'rgba(255,170,40,.28)'; const x0 = Math.max(ca.left, X(a)), x1 = Math.min(ca.right, X(b)); if (x1 > x0) ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top); }
-      if (sg.src !== 'whole' && sg.src !== 'none') {
-        ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.font = '11px sans-serif';
-        for (const [t, col, txt] of [[sg.t0, '#39d353', 'старт бега'], [sg.t1, '#ff7a45', 'финиш']]) {
-          const x = X(t); if (x < ca.left - 1 || x > ca.right + 1) continue;
-          ctx.strokeStyle = col; ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(x, ca.top); ctx.lineTo(x, ca.bottom); ctx.stroke();
-          ctx.fillText(txt, Math.min(x + 3, ca.right - 60), ca.top + 11);
+      const hasZones = !!(chart.options && chart.options.plugins && chart.options.plugins.ftZones);
+      if (ed) ed.delHits = [];
+      const pauses = sg.pauses || [];
+      for (let i = 0; i < pauses.length; i++) {
+        const [a, b] = pauses[i];
+        const rx0 = X(a), rx1 = X(b), x0 = Math.max(ca.left, rx0), x1 = Math.min(ca.right, rx1);
+        if (!hasZones && x1 > x0) { ctx.fillStyle = 'rgba(255,170,40,.28)'; ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top); }
+        if (ed && ed.canEdit && rx1 >= ca.left - 8 && rx0 <= ca.right + 8) {
+          const sel = ed.selectedPause === i;
+          const hStart = (ed.hover && ed.hover.type === 'pauseStart' && ed.hover.idx === i) || (ed.drag && ed.drag.kind === 'marker' && ed.drag.target.type === 'pauseStart' && ed.drag.target.idx === i);
+          const hEnd = (ed.hover && ed.hover.type === 'pauseEnd' && ed.hover.idx === i) || (ed.drag && ed.drag.kind === 'marker' && ed.drag.target.type === 'pauseEnd' && ed.drag.target.idx === i);
+          if (sel && x1 > x0) { ctx.fillStyle = 'rgba(255,209,102,.14)'; ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top); }
+          for (const [xp, act] of [[rx0, hStart], [rx1, hEnd]]) {
+            if (xp < ca.left - 1 || xp > ca.right + 1) continue;
+            ctx.strokeStyle = act || sel ? '#ffd166' : '#ffb020';
+            ctx.lineWidth = act ? 2.5 : 1.5;
+            ctx.setLineDash([]);
+            ctx.beginPath(); ctx.moveTo(xp, ca.top); ctx.lineTo(xp, ca.bottom); ctx.stroke();
+            ctx.fillStyle = act || sel ? '#ffd166' : '#ffb020';
+            ctx.fillRect(xp - 2.5, (ca.top + ca.bottom) / 2 - 10, 5, 20);
+          }
+          if (x1 > ca.left + 8 && x0 < ca.right - 8) {
+            const bw = 15, bh = 15;
+            const bx = x1 - x0 >= 20 ? Math.min(ca.right - bw - 2, x1 - bw - 2) : Math.max(ca.left + 2, Math.min(ca.right - bw - 2, (x0 + x1) / 2 - bw / 2));
+            const by = ca.top + 4;
+            const hot = ed.hover && ed.hover.type === 'pauseDel' && ed.hover.idx === i;
+            ctx.fillStyle = hot ? '#c92a2a' : 'rgba(24,24,24,.88)';
+            ctx.strokeStyle = hot ? '#ff8787' : '#ffb020'; ctx.lineWidth = 1;
+            ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(bx, by, bw, bh, 3); else ctx.rect(bx, by, bw, bh);
+            ctx.fill(); ctx.stroke();
+            ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('×', bx + bw / 2, by + bh / 2 + 0.5);
+            ed.delHits.push({ idx: i, x: bx, y: by, w: bw, h: bh });
+          }
         }
+      }
+      if (sg.src !== 'whole' && (sg.src !== 'none' || (ed && ed.canEdit))) {
+        const xStart = X(sg.t0), xEnd = X(sg.t1);
+        const near = Math.abs(xEnd - xStart) < 95;
+        const marks = [
+          { k: 't0', t: sg.t0, x: xStart, col: '#39d353', hotCol: '#7bff95', txt: ed && ed.drag && ed.drag.kind === 'marker' && ed.drag.target.type === 't0' ? `старт ${fmtDur(sg.t0)}` : 'старт бега', y: ca.bottom - 6 },
+          { k: 't1', t: sg.t1, x: xEnd, col: '#ff7a45', hotCol: '#ffaa85', txt: ed && ed.drag && ed.drag.kind === 'marker' && ed.drag.target.type === 't1' ? `финиш ${fmtDur(sg.t1)}` : 'финиш', y: near ? ca.bottom - 26 : ca.bottom - 6 },
+        ];
+        for (const m of marks) {
+          if (m.x < ca.left - 1 || m.x > ca.right + 1) continue;
+          const act = ed && ((ed.hover && ed.hover.type === m.k) || (ed.drag && ed.drag.kind === 'marker' && ed.drag.target.type === m.k));
+          ctx.strokeStyle = act ? m.hotCol : m.col; ctx.lineWidth = act ? 2.5 : 1.7; ctx.setLineDash([5, 4]);
+          ctx.beginPath(); ctx.moveTo(m.x, ca.top); ctx.lineTo(m.x, ca.bottom); ctx.stroke();
+          ctx.setLineDash([]);
+          if (ed && ed.canEdit) {
+            ctx.fillStyle = act ? m.hotCol : m.col;
+            ctx.beginPath(); ctx.moveTo(m.x - 5, ca.top); ctx.lineTo(m.x + 5, ca.top); ctx.lineTo(m.x, ca.top + 7); ctx.closePath(); ctx.fill();
+          }
+          drawPill(ctx, m.txt, m.x, m.y, act ? m.hotCol : m.col, 'rgba(16,16,16,.88)', ca);
+        }
+      }
+      if (ed && ed.drag && ed.drag.kind === 'addPause') {
+        const a = Math.min(ed.drag.t0, ed.drag.t1), b = Math.max(ed.drag.t0, ed.drag.t1);
+        const x0 = Math.max(ca.left, X(a)), x1 = Math.min(ca.right, X(b));
+        if (x1 >= x0) {
+          ctx.fillStyle = 'rgba(255,170,40,.38)'; ctx.fillRect(x0, ca.top, Math.max(2, x1 - x0), ca.bottom - ca.top);
+          ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x0, ca.top + 1, Math.max(2, x1 - x0), ca.bottom - ca.top - 2);
+          ctx.setLineDash([]);
+          drawPill(ctx, `пауза ${fmtDur(a)}–${fmtDur(b)} (${b - a} с)`, (x0 + x1) / 2, ca.top + 26, '#ffd166', 'rgba(16,16,16,.92)', ca);
+        }
+      } else if (ed && ed.drag && ed.drag.kind === 'zoomBox') {
+        const x0 = Math.min(ed.drag.x0, ed.drag.x1), x1 = Math.max(ed.drag.x0, ed.drag.x1);
+        ctx.fillStyle = 'rgba(63,167,255,.22)'; ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top);
+        ctx.strokeStyle = '#3fa7ff'; ctx.lineWidth = 1.5; ctx.strokeRect(x0, ca.top + 1, x1 - x0, ca.bottom - ca.top - 2);
+      } else if (ed && ed.drag && ed.drag.kind === 'marker') {
+        const t = ed.drag.target;
+        const sec = t.type === 't0' ? sg.t0 : t.type === 't1' ? sg.t1 : t.type === 'pauseStart' ? pauses[t.idx][0] : pauses[t.idx][1];
+        const hr = hrAtSec(ed.hrPts, sec);
+        const lbl = `${fmtSigned(sec)}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
+        drawPill(ctx, lbl, X(sec), Math.max(ca.top + 22, (ed.drag.py || ca.top + 40) - 10), '#fff', 'rgba(18,18,18,.94)', ca);
       }
       ctx.restore();
     } });
   }
   function markSeg(chart, seg) { if (!chart || !seg) return; ensureSegPlugin(); chart.$seg = seg; chart.update('none'); }
-  // manual correction: ± buttons move the start / end of the run; stored as run_override and applied by the same code
+
+  function hrAtSec(pts, sec) {
+    if (!pts || !pts.length) return null;
+    let lo = 0, hi = pts.length - 1;
+    while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] <= sec) lo = m; else hi = m; }
+    const a = pts[lo], b = pts[hi];
+    const p = Math.abs(a[0] - sec) <= Math.abs(b[0] - sec) ? a : b;
+    return Math.abs(p[0] - sec) <= 15 ? p[1] : null;
+  }
+
+  function destroyChartEditor() {
+    const c = $('wkChart');
+    if (c && c._edAbort) { c._edAbort.abort(); c._edAbort = null; }
+    if (c) c.style.cursor = '';
+    const box = $('wkChartBox'); if (box) box.classList.remove('editing');
+    const bar = $('wkChartBar'); if (bar) bar.classList.add('hidden');
+    const foot = $('wkChartFoot'); if (foot) foot.classList.add('hidden');
+    wkEditor = null;
+  }
+
+  function initChartEditor(w, an, chart, seg) {
+    ensureSegPlugin();
+    const canvas = $('wkChart'); if (!canvas || !chart) return;
+    destroyChartEditor();
+    const bar = $('wkChartBar'), foot = $('wkChartFoot'), box = $('wkChartBox');
+    if (bar) bar.classList.remove('hidden');
+    if (foot) foot.classList.remove('hidden');
+    if (box) box.classList.add('editing');
+    const ds0 = chart.data.datasets[0] && chart.data.datasets[0].data || [];
+    const xsOpt = chart.options.scales.x;
+    const fullMin = xsOpt.min != null ? xsOpt.min : (ds0.length ? Math.min(0, ds0[0].x) : 0);
+    const fullMax = Math.max(xsOpt.max != null ? xsOpt.max : (ds0.length ? ds0[ds0.length - 1].x : 1), (w.duration_s || 0) / 60);
+    let viewMin = fullMin, viewMax = fullMax;
+    if (savedChartView && savedChartView.id === w.id) {
+      const sp = savedChartView.max - savedChartView.min;
+      if (sp >= 0.2 && sp < fullMax - fullMin - 0.01) {
+        viewMin = Math.max(fullMin, Math.min(fullMax - sp, savedChartView.min));
+        viewMax = viewMin + sp;
+      }
+    }
+    const cut = w.tail_cut != null ? w.tail_cut : Infinity;
+    const hrPts = w.session_samples && w.session_samples.length ? w.session_samples.filter((p) => p[0] < cut) : (w.samples || []);
+    const canEdit = w.type === 'run';
+    const ed = {
+      w, an, chart, canvas, canEdit, hrPts,
+      fullMin, fullMax, viewMin, viewMax,
+      mode: 'pan', drag: null, hover: null, hoverSec: null, selectedPause: null, delHits: [],
+      pts: new Map(), pinch: null, saving: false,
+      draft: {
+        t0: Math.round(seg.t0), t1: Math.round(seg.t1),
+        pauses: (seg.pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]),
+        src: seg.src, runTouched: false, pausesTouched: false, t0Moved: false, t1Moved: false, dirty: false,
+      },
+    };
+    wkEditor = ed;
+    chart.$editor = ed;
+    xsOpt.min = viewMin; xsOpt.max = viewMax;
+
+    const ac = new AbortController(), sig = { signal: ac.signal };
+    canvas._edAbort = ac;
+
+    const setView = (lo, hi) => {
+      const span = Math.max(0.25, Math.min(ed.fullMax - ed.fullMin, hi - lo));
+      lo = Math.max(ed.fullMin, Math.min(ed.fullMax - span, lo));
+      hi = lo + span;
+      ed.viewMin = lo; ed.viewMax = hi;
+      savedChartView = { id: w.id, min: lo, max: hi };
+      chart.options.scales.x.min = lo; chart.options.scales.x.max = hi;
+      chart.update('none');
+      syncButtons();
+    };
+    const zoomFactor = (f, anchorFrac) => {
+      const span = ed.viewMax - ed.viewMin;
+      const frac = anchorFrac == null ? 0.5 : Math.max(0, Math.min(1, anchorFrac));
+      const anchor = ed.viewMin + span * frac;
+      const ns = Math.max(0.25, Math.min(ed.fullMax - ed.fullMin, span * f));
+      setView(anchor - ns * frac, anchor + ns * (1 - frac));
+    };
+    const secAtPx = (px) => Math.round(chart.scales.x.getValueForPixel(px) * 60);
+    const clampSec = (s, lo, hi) => Math.max(lo, Math.min(hi, s));
+
+    function hitTest(px, py) {
+      if (!ed.canEdit) return null;
+      const ca = chart.chartArea;
+      if (!ca || px < ca.left - 10 || px > ca.right + 10 || py < ca.top - 6 || py > ca.bottom + 6) return null;
+      for (const b of ed.delHits) if (px >= b.x - 3 && px <= b.x + b.w + 3 && py >= b.y - 3 && py <= b.y + b.h + 3) return { type: 'pauseDel', idx: b.idx };
+      const xs = chart.scales.x, X = (t) => xs.getPixelForValue(t / 60);
+      const cands = [];
+      const ps = ed.draft.pauses;
+      for (let i = 0; i < ps.length; i++) {
+        cands.push({ type: 'pauseStart', idx: i, d: Math.abs(px - X(ps[i][0])), x: X(ps[i][0]) });
+        cands.push({ type: 'pauseEnd', idx: i, d: Math.abs(px - X(ps[i][1])), x: X(ps[i][1]) });
+      }
+      cands.push({ type: 't0', d: Math.abs(px - X(ed.draft.t0)), x: X(ed.draft.t0) });
+      cands.push({ type: 't1', d: Math.abs(px - X(ed.draft.t1)), x: X(ed.draft.t1) });
+      cands.sort((a, b) => a.d - b.d);
+      if (cands.length && cands[0].d <= 8) return cands[0];
+      return null;
+    }
+
+    function recomputeAutoPauses() {
+      const tmp = Object.assign({}, ed.w, { run_override: [ed.draft.t0, ed.draft.t1], pause_override: null });
+      const s = A.segment(tmp);
+      ed.draft.pauses = (s.pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]);
+    }
+
+    function updateReadout(sec, prefix) {
+      const el = $('wkCursorReadout'); if (!el) return;
+      if (sec == null) { el.textContent = ''; return; }
+      const hr = hrAtSec(ed.hrPts, sec);
+      el.textContent = `${prefix ? prefix + ' ' : ''}${fmtSigned(sec)}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
+    }
+
+    function syncButtons() {
+      const zOut = $('wkZOut'), zReset = $('wkZReset'), zBox = $('wkZBox'), addP = $('wkAddPause'), zRun = $('wkZRun');
+      const zoomed = ed.viewMax - ed.viewMin < (ed.fullMax - ed.fullMin) - 0.02;
+      if (zOut) zOut.disabled = !zoomed;
+      if (zReset) zReset.disabled = !zoomed;
+      if (zRun) zRun.classList.toggle('hidden', !ed.canEdit);
+      if (zBox) zBox.classList.toggle('active', ed.mode === 'zoomBox');
+      if (addP) { addP.classList.toggle('hidden', !ed.canEdit); addP.classList.toggle('active', ed.mode === 'addPause'); }
+      const hasOv = !!(ed.w.run_override || Array.isArray(ed.w.pause_override));
+      const saveB = $('wkSegSave'), cancelB = $('wkSegCancel'), resetB = $('wkSegReset'), stEl = $('wkSegStatus');
+      if (saveB) { saveB.classList.toggle('hidden', !ed.canEdit || !ed.draft.dirty); saveB.disabled = ed.saving; }
+      if (cancelB) { cancelB.classList.toggle('hidden', !ed.canEdit || !ed.draft.dirty); cancelB.disabled = ed.saving; }
+      if (resetB) { resetB.classList.toggle('hidden', !ed.canEdit || (!hasOv && !ed.draft.dirty)); resetB.disabled = ed.saving; }
+      if (stEl && !ed.saving) stEl.textContent = ed.draft.dirty ? 'Есть несохранённые правки' : (hasOv ? 'Границы поправлены вручную' : '');
+      const chipsEl = $('wkPauseChips');
+      if (chipsEl) {
+        if (!ed.canEdit) chipsEl.innerHTML = '';
+        else if (!ed.draft.pauses.length) chipsEl.innerHTML = '<span class="small muted">Паузы: нет</span>';
+        else {
+          chipsEl.innerHTML = '<span class="small muted">Паузы:</span>' + ed.draft.pauses.map(([a, b], i) =>
+            `<span class="pause-chip${ed.selectedPause === i ? ' sel' : ''}" data-i="${i}">${fmtDur(a)}–${fmtDur(b)} (${fmtDur(b - a)}) <button type="button" class="p-del" data-i="${i}" title="Удалить паузу">×</button></span>`).join('');
+          chipsEl.querySelectorAll('.pause-chip').forEach((ch) => ch.addEventListener('click', (e) => {
+            if (e.target.classList.contains('p-del')) return;
+            const i = +ch.dataset.i, p = ed.draft.pauses[i];
+            if (!p) return;
+            ed.selectedPause = i;
+            // pan/zoom gently so the pause is visible if off-screen
+            const aM = p[0] / 60, bM = p[1] / 60;
+            if (bM < ed.viewMin || aM > ed.viewMax) { const pad = Math.max(1, (ed.viewMax - ed.viewMin) * 0.3); setView((aM + bM) / 2 - pad, (aM + bM) / 2 + pad); }
+            else syncVisuals();
+          }));
+          chipsEl.querySelectorAll('.p-del').forEach((btn) => btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const i = +btn.dataset.i;
+            ed.draft.pauses.splice(i, 1);
+            ed.draft.pausesTouched = true; ed.draft.dirty = true; ed.selectedPause = null;
+            syncVisuals();
+          }));
+        }
+      }
+      if ($('wkChartHint')) $('wkChartHint').classList.toggle('hidden', !ed.canEdit);
+    }
+
+    function syncVisuals() {
+      if (chart.options.plugins.ftZones && window.FTRecoveryUI && window.FTRecoveryUI.sessionZones) {
+        chart.options.plugins.ftZones.zones = window.FTRecoveryUI.sessionZones(ed.w, ed.fullMin, ed.fullMax, ed.draft);
+      }
+      if (cadChart) {
+        cadChart.$seg = Object.assign({}, cadChart.$seg || {}, { t0: ed.draft.t0, t1: ed.draft.t1, pauses: ed.draft.pauses, src: ed.draft.runTouched ? 'override' : ed.draft.src });
+        cadChart.update('none');
+      }
+      chart.update('none');
+      syncButtons();
+      renderSegControls(ed.w, { t0: ed.draft.t0, t1: ed.draft.t1, pauses: ed.draft.pauses, src: ed.draft.runTouched ? 'override' : ed.draft.src });
+    }
+    ed.syncVisuals = syncVisuals;
+    ed.syncButtons = syncButtons;
+    ed.setView = setView;
+
+    // Toolbar buttons
+    if ($('wkZIn')) $('wkZIn').addEventListener('click', () => zoomFactor(0.6), sig);
+    if ($('wkZOut')) $('wkZOut').addEventListener('click', () => zoomFactor(1.6), sig);
+    if ($('wkZReset')) $('wkZReset').addEventListener('click', () => setView(ed.fullMin, ed.fullMax), sig);
+    if ($('wkZRun')) $('wkZRun').addEventListener('click', () => {
+      const pad = Math.max(0.5, (ed.draft.t1 - ed.draft.t0) / 60 * 0.06);
+      setView(ed.draft.t0 / 60 - pad, ed.draft.t1 / 60 + pad);
+    }, sig);
+    if ($('wkZBox')) $('wkZBox').addEventListener('click', () => { ed.mode = ed.mode === 'zoomBox' ? 'pan' : 'zoomBox'; syncButtons(); }, sig);
+    if ($('wkAddPause')) $('wkAddPause').addEventListener('click', () => { ed.mode = ed.mode === 'addPause' ? 'pan' : 'addPause'; syncButtons(); }, sig);
+    if ($('wkSegSave')) $('wkSegSave').addEventListener('click', () => commitEditorDraft(ed), sig);
+    if ($('wkSegCancel')) $('wkSegCancel').addEventListener('click', () => openDetail(ed.w.id, { keepScroll: true }), sig);
+    if ($('wkSegReset')) $('wkSegReset').addEventListener('click', () => resetEditorToAuto(ed), sig);
+
+    // Canvas pointer & wheel interactions
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect(), ca = chart.chartArea;
+      if (!ca) return;
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY) && !e.ctrlKey && !e.metaKey) {
+        const shift = e.deltaX / Math.max(1, ca.width) * (ed.viewMax - ed.viewMin);
+        setView(ed.viewMin + shift, ed.viewMax + shift);
+      } else {
+        const px = e.clientX - rect.left;
+        const frac = Math.max(0, Math.min(1, (px - ca.left) / Math.max(1, ca.width)));
+        zoomFactor(e.deltaY > 0 ? 1.25 : 0.8, frac);
+      }
+    }, { passive: false, signal: ac.signal });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
+      ed.pts.set(e.pointerId, { x: px, y: py });
+      if (ed.pts.size === 2) {
+        const vs = [...ed.pts.values()], ca = chart.chartArea;
+        ed.pinch = { d: Math.max(10, Math.hypot(vs[0].x - vs[1].x, vs[0].y - vs[1].y)), viewMin0: ed.viewMin, viewMax0: ed.viewMax,
+          midFrac: ca ? Math.max(0, Math.min(1, ((vs[0].x + vs[1].x) / 2 - ca.left) / Math.max(1, ca.width))) : 0.5 };
+        ed.drag = null; return;
+      }
+      if (ed.pts.size > 2) return;
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+      const hit = hitTest(px, py);
+      if (hit && hit.type === 'pauseDel') {
+        ed.draft.pauses.splice(hit.idx, 1);
+        ed.draft.pausesTouched = true; ed.draft.dirty = true; ed.selectedPause = null;
+        syncVisuals(); return;
+      }
+      if (hit) {
+        ed.drag = { kind: 'marker', target: hit, startPx: px, py };
+        if (hit.type === 'pauseStart' || hit.type === 'pauseEnd') ed.selectedPause = hit.idx;
+        chart.options.plugins.tooltip.enabled = false;
+        if (chart.tooltip) chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        syncVisuals(); return;
+      }
+      const ca = chart.chartArea;
+      if (!ca || px < ca.left || px > ca.right || py < ca.top || py > ca.bottom) return;
+      if (ed.canEdit && (ed.mode === 'addPause' || e.shiftKey)) {
+        const s = clampSec(secAtPx(px), Math.ceil(ed.draft.t0), Math.floor(ed.draft.t1));
+        ed.drag = { kind: 'addPause', t0: s, t1: s };
+        chart.options.plugins.tooltip.enabled = false;
+        chart.update('none'); return;
+      }
+      if (ed.mode === 'zoomBox' || e.ctrlKey || e.metaKey) {
+        ed.drag = { kind: 'zoomBox', x0: px, x1: px };
+        chart.options.plugins.tooltip.enabled = false;
+        chart.update('none'); return;
+      }
+      ed.drag = { kind: 'pan', startPx: px, viewMin0: ed.viewMin, viewMax0: ed.viewMax, moved: false, downSec: secAtPx(px) };
+    }, sig);
+
+    canvas.addEventListener('pointermove', (e) => {
+      const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
+      if (ed.pts.has(e.pointerId)) ed.pts.set(e.pointerId, { x: px, y: py });
+      if (ed.pinch && ed.pts.size >= 2) {
+        const vs = [...ed.pts.values()], d = Math.max(10, Math.hypot(vs[0].x - vs[1].x, vs[0].y - vs[1].y));
+        const span0 = ed.pinch.viewMax0 - ed.pinch.viewMin0;
+        const ns = Math.max(0.25, Math.min(ed.fullMax - ed.fullMin, span0 * ed.pinch.d / d));
+        const anchor = ed.pinch.viewMin0 + span0 * ed.pinch.midFrac;
+        setView(anchor - ns * ed.pinch.midFrac, anchor + ns * (1 - ed.pinch.midFrac));
+        return;
+      }
+      const ca = chart.chartArea;
+      if (ed.drag) {
+        const d = ed.drag;
+        if (d.kind === 'pan') {
+          if (Math.abs(px - d.startPx) > 3) d.moved = true;
+          if (d.moved && ca) {
+            const shift = -(px - d.startPx) / Math.max(1, ca.width) * (d.viewMax0 - d.viewMin0);
+            setView(d.viewMin0 + shift, d.viewMax0 + shift);
+          }
+          return;
+        }
+        if (d.kind === 'zoomBox') {
+          d.x1 = Math.max(ca.left, Math.min(ca.right, px));
+          chart.update('none'); return;
+        }
+        if (d.kind === 'addPause') {
+          d.t1 = clampSec(secAtPx(px), Math.ceil(ed.draft.t0), Math.floor(ed.draft.t1));
+          const a = Math.min(d.t0, d.t1), b = Math.max(d.t0, d.t1);
+          updateReadout(d.t1, `пауза ${fmtDur(a)}–${fmtDur(b)} (${b - a} с) ·`);
+          chart.update('none'); return;
+        }
+        if (d.kind === 'marker') {
+          d.py = py;
+          const s = secAtPx(px), dur = Math.floor(ed.w.duration_s || ed.fullMax * 60);
+          const t = d.target;
+          if (t.type === 't0') {
+            ed.draft.t0 = clampSec(s, 0, Math.min(dur - 10, ed.draft.t1 - 10));
+            ed.draft.t0Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
+            if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
+            else recomputeAutoPauses();
+            updateReadout(ed.draft.t0, 'старт');
+          } else if (t.type === 't1') {
+            ed.draft.t1 = clampSec(s, ed.draft.t0 + 10, Math.max(ed.draft.t0 + 10, dur));
+            ed.draft.t1Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
+            if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
+            else recomputeAutoPauses();
+            updateReadout(ed.draft.t1, 'финиш');
+          } else if (t.type === 'pauseStart') {
+            const p = ed.draft.pauses[t.idx];
+            if (p) {
+              p[0] = clampSec(s, Math.ceil(ed.draft.t0), p[1] - 1);
+              ed.draft.pausesTouched = true; ed.draft.dirty = true;
+              updateReadout(p[0], 'пауза нач.');
+            }
+          } else if (t.type === 'pauseEnd') {
+            const p = ed.draft.pauses[t.idx];
+            if (p) {
+              p[1] = clampSec(s, p[0] + 1, Math.floor(ed.draft.t1));
+              ed.draft.pausesTouched = true; ed.draft.dirty = true;
+              updateReadout(p[1], 'пауза кон.');
+            }
+          }
+          syncVisuals(); return;
+        }
+      }
+      // hover
+      const hit = hitTest(px, py);
+      const prevH = ed.hover;
+      ed.hover = hit;
+      if (ca && px >= ca.left && px <= ca.right && py >= ca.top && py <= ca.bottom) {
+        const s = secAtPx(px); ed.hoverSec = s;
+        updateReadout(s, '');
+      } else { ed.hoverSec = null; updateReadout(null); }
+      canvas.style.cursor = hit ? (hit.type === 'pauseDel' ? 'pointer' : 'ew-resize') : (ed.mode === 'addPause' || ed.mode === 'zoomBox' ? 'crosshair' : 'grab');
+      if (JSON.stringify(prevH) !== JSON.stringify(hit)) chart.update('none');
+    }, sig);
+
+    const endPtr = (e) => {
+      ed.pts.delete(e.pointerId);
+      if (ed.pts.size < 2) ed.pinch = null;
+      const d = ed.drag;
+      if (!d) return;
+      ed.drag = null;
+      chart.options.plugins.tooltip.enabled = true;
+      if (d.kind === 'pan' && !d.moved && ed.canEdit) {
+        const idx = ed.draft.pauses.findIndex(([a, b]) => d.downSec >= a && d.downSec <= b);
+        ed.selectedPause = idx >= 0 ? (ed.selectedPause === idx ? null : idx) : null;
+        syncVisuals(); return;
+      }
+      if (d.kind === 'zoomBox') {
+        ed.mode = 'pan';
+        if (Math.abs(d.x1 - d.x0) >= 12) {
+          const xs = chart.scales.x;
+          const v0 = xs.getValueForPixel(Math.min(d.x0, d.x1)), v1 = xs.getValueForPixel(Math.max(d.x0, d.x1));
+          setView(v0, v1);
+        } else { chart.update('none'); syncButtons(); }
+        return;
+      }
+      if (d.kind === 'addPause') {
+        ed.mode = 'pan';
+        const a = Math.min(d.t0, d.t1), b = Math.max(d.t0, d.t1);
+        if (b - a >= 2) {
+          ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses.concat([[a, b]]), ed.draft.t0, ed.draft.t1);
+          ed.draft.pausesTouched = true; ed.draft.dirty = true;
+          ed.selectedPause = ed.draft.pauses.findIndex(([x, y]) => x <= a && y >= b);
+          syncVisuals();
+        } else { chart.update('none'); syncButtons(); }
+        return;
+      }
+      if (d.kind === 'marker') {
+        if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
+        else recomputeAutoPauses();
+        syncVisuals();
+      }
+    };
+    canvas.addEventListener('pointerup', endPtr, sig);
+    canvas.addEventListener('pointercancel', endPtr, sig);
+    canvas.addEventListener('pointerleave', () => {
+      if (!ed.drag) { ed.hover = null; ed.hoverSec = null; updateReadout(null); chart.update('none'); }
+    }, sig);
+
+    canvas.addEventListener('dblclick', (e) => {
+      if (!ed.canEdit) return;
+      const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top, ca = chart.chartArea;
+      if (!ca || px < ca.left || px > ca.right || py < ca.top || py > ca.bottom) return;
+      if (hitTest(px, py)) return;
+      const s = secAtPx(px);
+      if (s < ed.draft.t0 || s > ed.draft.t1) return;
+      if (ed.draft.pauses.some(([a, b]) => s >= a && s <= b)) return;
+      const lo = Math.ceil(ed.draft.t0), hi = Math.floor(ed.draft.t1);
+      if (hi - lo < 2) return;
+      const a = Math.max(lo, Math.min(hi - 2, s - 5)), b = Math.min(hi, a + 10);
+      if (b - a < 2) return;
+      ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses.concat([[a, b]]), ed.draft.t0, ed.draft.t1);
+      ed.draft.pausesTouched = true; ed.draft.dirty = true;
+      ed.selectedPause = ed.draft.pauses.findIndex(([x, y]) => x <= a && y >= b);
+      syncVisuals();
+    }, sig);
+
+    document.addEventListener('keydown', (e) => {
+      if ($('wkDetail').classList.contains('hidden')) return;
+      if (document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+      if ((e.key === 'Delete' || e.key === 'Backspace') && ed.selectedPause != null && ed.draft.pauses[ed.selectedPause]) {
+        e.preventDefault();
+        ed.draft.pauses.splice(ed.selectedPause, 1);
+        ed.draft.pausesTouched = true; ed.draft.dirty = true; ed.selectedPause = null;
+        syncVisuals();
+      } else if (e.key === 'Escape' && ed.mode !== 'pan') {
+        ed.mode = 'pan'; syncButtons();
+      }
+    }, sig);
+
+    syncVisuals();
+  }
+
+  async function commitEditorDraft(ed) {
+    if (!ed || ed.saving) return;
+    ed.saving = true;
+    const stEl = $('wkSegStatus'); if (stEl) stEl.textContent = 'Сохраняю…';
+    ed.syncButtons();
+    const w = ed.w, nw = Object.assign({}, w);
+    if (ed.draft.runTouched) {
+      const curOv = Array.isArray(w.run_override) ? w.run_override : [null, null];
+      nw.run_override = [ed.draft.t0Moved ? ed.draft.t0 : curOv[0], ed.draft.t1Moved ? ed.draft.t1 : curOv[1]];
+    }
+    if (ed.draft.pausesTouched) {
+      const r0 = nw.run_override && nw.run_override[0] != null ? nw.run_override[0] : ed.draft.t0;
+      const r1 = nw.run_override && nw.run_override[1] != null ? nw.run_override[1] : ed.draft.t1;
+      nw.pause_override = A.applyPauseOverride(ed.draft.pauses, r0, r1);
+    }
+    Object.assign(nw, derived(nw));
+    Store.putWorkout(nw);
+    const syncRes = await Sync.run();
+    renderList();
+    await openDetail(w.id, { keepScroll: true });
+    const st2 = $('wkSegStatus');
+    if (st2) st2.textContent = syncRes === 'ok' ? 'Сохранено на сервер' : 'Сохранено локально (отправится при связи)';
+  }
+
+  async function resetEditorToAuto(ed) {
+    if (!ed || ed.saving) return;
+    ed.saving = true;
+    const stEl = $('wkSegStatus'); if (stEl) stEl.textContent = 'Возвращаю авто…';
+    ed.syncButtons();
+    await applyOverride(ed.w, null, { resetPauses: true, keepScroll: true });
+    const st2 = $('wkSegStatus');
+    if (st2) st2.textContent = 'Возвращено автоопределение';
+  }
+
+  // manual correction: on native, ± buttons save immediately; on web, they nudge the editor draft (or save if no HR chart)
   function renderSegControls(w, seg) {
     const el = $('wkSegCtl'); if (!el) return;
     if (!seg || seg.src === 'whole' || w.type !== 'run') { el.classList.add('hidden'); el.innerHTML = ''; return; }
     el.classList.remove('hidden');
+    const ed = !isNative && wkEditor && wkEditor.w.id === w.id ? wkEditor : null;
     const btn = (k, d) => `<button class="btn seg-adj" data-k="${k}" data-d="${d}">${d > 0 ? '+' : '−'}${Math.abs(d)} с</button>`;
-    el.innerHTML = `<div class="small"><b>Границы бега</b> — если найдены неточно, подвинь (всё пересчитается: темп, дистанция, каденс, пульс, восстановление):</div>` +
+    const hasOv = !!(w.run_override || Array.isArray(w.pause_override));
+    const stopSum = (seg.pauses || []).reduce((s, [a, b]) => s + Math.max(0, b - a), 0);
+    const webActions = ed && ed.draft.dirty
+      ? '<div class="seg-row"><button class="btn primary seg-save-top">Сохранить</button><button class="btn seg-cancel-top">Отменить</button>' + (hasOv ? '<button class="btn seg-reset">Вернуть автоопределение</button>' : '') + '</div>'
+      : (hasOv ? '<div class="seg-row"><button class="btn seg-reset">Вернуть автоопределение</button></div>' : '');
+    el.innerHTML = `<div class="small"><b>Границы бега</b> — ${ed ? 'перетащи маркеры на графике пульса или поправь кнопками (после нажатия «Сохранить» всё пересчитается):' : 'если найдены неточно, подвинь (всё пересчитается: темп, дистанция, каденс, пульс, восстановление):'}</div>` +
       `<div class="seg-row">Старт бега: <b>${fmtDur(seg.t0)}</b> ${[-30, -5, 5, 30].map((d) => btn(0, d)).join('')}</div>` +
       `<div class="seg-row">Финиш бега: <b>${fmtDur(seg.t1)}</b> ${[-30, -5, 5, 30].map((d) => btn(1, d)).join('')}</div>` +
-      (w.run_override ? '<div class="seg-row"><button class="btn seg-reset">Вернуть автоопределение</button></div>' : '');
+      (ed ? `<div class="seg-row small muted">В движении ≈ <b>${fmtDur(Math.max(0, seg.t1 - seg.t0 - stopSum))}</b> · пауз: <b>${(seg.pauses || []).length}</b> (${fmtDur(stopSum)})</div>` : '') +
+      webActions;
     el.querySelectorAll('.seg-adj').forEach((b) => b.addEventListener('click', () => adjustRun(w, +b.dataset.k, +b.dataset.d)));
-    const r = el.querySelector('.seg-reset'); if (r) r.addEventListener('click', () => applyOverride(w, null));
+    const sv = el.querySelector('.seg-save-top'); if (sv && ed) sv.addEventListener('click', () => commitEditorDraft(ed));
+    const cn = el.querySelector('.seg-cancel-top'); if (cn && ed) cn.addEventListener('click', () => openDetail(w.id, { keepScroll: true }));
+    const r = el.querySelector('.seg-reset'); if (r) r.addEventListener('click', () => ed ? resetEditorToAuto(ed) : applyOverride(w, null, { resetPauses: true }));
   }
   function adjustRun(w, k, d) {
+    const ed = !isNative && wkEditor && wkEditor.w.id === w.id ? wkEditor : null;
+    if (ed) {
+      const dur = Math.floor(w.duration_s || ed.fullMax * 60);
+      if (k === 0) {
+        const v = Math.max(0, Math.min(ed.draft.t1 - 10, Math.round(ed.draft.t0 + d)));
+        ed.draft.t0 = v; ed.draft.t0Moved = true;
+      } else {
+        const v = Math.min(dur, Math.max(ed.draft.t0 + 10, Math.round(ed.draft.t1 + d)));
+        ed.draft.t1 = v; ed.draft.t1Moved = true;
+      }
+      ed.draft.runTouched = true; ed.draft.dirty = true;
+      if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
+      else {
+        const tmp = Object.assign({}, w, { run_override: [ed.draft.t0, ed.draft.t1], pause_override: null });
+        ed.draft.pauses = (A.segment(tmp).pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]);
+      }
+      ed.syncVisuals();
+      return;
+    }
     const cur = (w.seg && [w.seg.t0, w.seg.t1]) || [0, w.duration_s];
     const ov = (w.run_override || [null, null]).slice();
     ov[k] = Math.max(0, Math.min(w.duration_s, Math.round((cur[k] + d) * 10) / 10));
     if (ov[1] != null && ov[0] != null && ov[1] < ov[0] + 10) return;
     applyOverride(w, [ov[0] != null ? ov[0] : cur[0], ov[1] != null ? ov[1] : cur[1]]);
   }
-  function applyOverride(w, ov) {
+  async function applyOverride(w, ov, opts) {
     const nw = Object.assign({}, w, { run_override: ov });
     if (!ov) delete nw.run_override;
-    Object.assign(nw, derived(nw)); if (!ov) nw.run_override = null;
+    if (opts && opts.resetPauses) delete nw.pause_override;
+    Object.assign(nw, derived(nw));
+    if (!ov) nw.run_override = null;
+    if (opts && opts.resetPauses) nw.pause_override = null;
     Store.putWorkout(nw);
-    renderList(); openDetail(w.id);
+    if (!isNative) await Sync.run();
+    renderList();
+    await openDetail(w.id, { keepScroll: !!(opts && opts.keepScroll) });
   }
 
   // ---------------- speed / cadence profiles, map ----------------
@@ -830,7 +1406,7 @@
     $('wkStart').addEventListener('click', start);
     $('wkStop').addEventListener('click', stop);
     document.querySelectorAll('#wkTypeSeg button').forEach((b) => b.addEventListener('click', () => { if (!active) { wkType = b.dataset.type; syncAddLabel(); renderRec(); } }));
-    $('wkDetailClose').addEventListener('click', () => { $('wkDetail').classList.add('hidden'); });
+    $('wkDetailClose').addEventListener('click', () => { destroyChartEditor(); $('wkDetail').classList.add('hidden'); });
     $('wkDelete').addEventListener('click', () => { if (detailId && confirm('Удалить тренировку?')) { Store.deleteWorkout(detailId); $('wkDetail').classList.add('hidden'); renderList(); } });
     const si = $('strideInput');
     if (si) { si.value = manualStride(); si.addEventListener('change', () => { const v = parseFloat(String(si.value).replace(',', '.')); if (v >= 0.3 && v <= 2) Store.setConfig({ stride: v }); renderRec(); }); }
