@@ -143,5 +143,19 @@ const APPROACH = [0, 100, 100, 1.3], RUN1 = [100, 300, 165, 2.8], DOG = [300, 31
   near(a.gps_distance_m, 2.8 * (200 + 388), 80, 'GPS distance excludes the pause');
   near(a.steps_run, 165 * (200 + 388) / 60, 40, 'steps_run excludes pause steps');
 }
+// 10. pace profile helpers: s/km, no blow-ups, axis auto-fits and stays in range
+{
+  ok(A.paceSec(1000, 420) === 420, '7:00 /км from 1 km in 420 s');
+  ok(A.paceSec(83, 1) == null, '300 km/h segment is dropped, not a 0:43 pace');
+  ok(A.paceSec(100, 200) == null, '33 min/km walk is dropped (slower than 12:00)');
+  ok(A.paceSec(0, 30) == null && A.paceSec(100, 0) == null, 'zero distance or time is dropped');
+  const tight = A.paceAxisRange([390, 420, 450]);
+  ok(tight.min <= 390 && tight.max >= 450 && tight.min >= 120 && tight.max <= 720, `auto-fit around data: ${JSON.stringify(tight)}`);
+  ok(tight.max - tight.min < 300, 'auto-fit does not force the full 3:00–12:00 window');
+  const empty = A.paceAxisRange([]);
+  ok(empty.min === 180 && empty.max === 720, 'empty series defaults to 3:00–12:00');
+  const one = A.paceAxisRange([420]);
+  ok(one.max - one.min >= 60 && one.min <= 420 && one.max >= 420, `single point has at least 1 min span: ${JSON.stringify(one)}`);
+}
 console.log(fails ? `${fails} FAILED` : 'ALL OK');
 process.exit(fails ? 1 : 0);

@@ -63,8 +63,27 @@ const txt = await page.textContent('#wkDetailStats');
 ok(/В движении/.test(txt) && /Остановки: 1/.test(txt) && /По GPS/.test(txt) && /Каденс средний: \d+/.test(txt), 'detail shows moving time, stops, GPS, cadence');
 ok(await page.evaluate(() => !!window.__wkMap && document.querySelectorAll('#wkMap path.leaflet-interactive').length >= 1), 'track drawn on the map');
 ok(await page.evaluate(() => document.querySelectorAll('#wkMap .leaflet-tile-loaded').length > 0), 'OSM tiles loaded');
-const sp = await page.evaluate(() => { const c = Chart.getChart('wkSpeedChart'); return c ? c.data.datasets.map((d) => d.data.length) : null; });
-ok(sp && sp[0] > 20 && sp[1] > 20, `speed profile: ${sp} segments (steps / GPS)`);
+const sp = await page.evaluate(() => {
+  const c = Chart.getChart('wkSpeedChart');
+  if (!c) return null;
+  const ys = c.data.datasets.flatMap((d) => d.data.map((p) => p.y));
+  const titleEl = document.getElementById('wkSpeedChart').parentElement.previousElementSibling;
+  return {
+    n: c.data.datasets.map((d) => d.data.length),
+    title: titleEl ? titleEl.textContent.trim() : '',
+    yTitle: c.options.scales.y.title && c.options.scales.y.title.text,
+    reverse: !!c.options.scales.y.reverse,
+    yMin: c.options.scales.y.min,
+    yMax: c.options.scales.y.max,
+    dataMin: ys.length ? Math.min(...ys) : null,
+    dataMax: ys.length ? Math.max(...ys) : null,
+  };
+});
+ok(sp && sp.n[0] > 20 && sp.n[1] > 20, `pace profile: ${sp && sp.n} segments (steps / GPS)`);
+ok(sp && /Темп по отрезкам в 100 шагов/.test(sp.title), 'pace chart title: ' + (sp && sp.title));
+ok(sp && sp.reverse && sp.yTitle === 'м:сс /км', `y-axis is min/km, faster at the top (${sp && sp.yTitle}, reverse=${sp && sp.reverse})`);
+ok(sp && sp.dataMin >= 120 && sp.dataMax <= 720 && sp.yMin >= 120 && sp.yMax <= 720 && sp.yMin < sp.dataMin && sp.yMax > sp.dataMax,
+  `plotted paces stay in 2:00–12:00 and the axis auto-fits: data ${sp && sp.dataMin}–${sp && sp.dataMax}, axis ${sp && sp.yMin}–${sp && sp.yMax}`);
 const cd = await page.evaluate(() => { const c = Chart.getChart('wkCadChart'); return c ? c.data.datasets[0].data.length : 0; });
 ok(cd > 50, `cadence profile: ${cd} points`);
 await page.screenshot({ path: shot('screenshot-analytics-detail.png'), fullPage: true });

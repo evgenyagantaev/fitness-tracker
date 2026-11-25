@@ -656,7 +656,7 @@
     $('wkDetailStats').innerHTML = [
       ['Время общее', fmtDur(w.duration_s)], ...segRows, ['В движении', fmtDur(moving)], ['Остановки', stops ? `${stops}, ${fmtDur(stopS)}` : 'нет'],
       ['Дистанция', (w.distance_m / 1000).toFixed(2) + ' км' + (w.gps_ok ? ' (GPS)' : ' (по шагам)')],
-      ['Темп (в движении)', pace(w.distance_m)], ['Средняя скорость', moving > 0 && w.distance_m > 0 ? (w.distance_m / moving * 3.6).toFixed(1) + ' км/ч' : '—'],
+      ['Темп (в движении)', pace(w.distance_m)],
       ['По шагам', (stepDist / 1000).toFixed(2) + ' км · ' + pace(stepDist)], ['По GPS', gpsTxt + (w.gps_distance_m ? ' · ' + pace(w.gps_distance_m) : '')],
       ['Шаги', w.steps + (w.steps_start_missed ? ` <span class="muted small">(+≈${w.steps_start_missed} в первые секунды, не посчитаны датчиком)</span>` : '')], ['Каденс средний', (w.cadence_avg || an.cadence_avg || '—') + (w.cadence_avg || an.cadence_avg ? ' шаг/мин' : '')],
       ...(beltless ? [] : [['Пульс средний', w.hr && w.hr.avg ? Math.round(w.hr.avg) + (q && q.masked_s && w.hr_raw && w.hr_raw.avg ? ` <span class="muted small">(с помехами ${Math.round(w.hr_raw.avg)})</span>` : '') : '—'],
@@ -1377,17 +1377,21 @@
     await openDetail(w.id, { keepScroll: !!(opts && opts.keepScroll) });
   }
 
-  // ---------------- speed / cadence profiles, map ----------------
+  // ---------------- pace / cadence profiles, map ----------------
   let speedChart = null, cadChart = null, map = null, leafletP = null;
   function drawProfiles(w, an) {
     if (!window.Chart) return;
     const segs = an.segments && an.segments.length ? an.segments : (w.segments || []);
-    let cum = 0, cumG = 0; const byStep = [], byGps = [];
+    let cum = 0; const byStep = [], byGps = [];
     for (const sg of segs) {
       const [t0, t1, n, dm, gm, mv] = sg;
-      cum += dm; byStep.push({ x: cum / 1000, y: Math.round(dm / mv * 36) / 10 });
-      if (gm != null) { cumG += gm; byGps.push({ x: cum / 1000, y: Math.round(gm / mv * 36) / 10 }); }
+      cum += dm;
+      const x = cum / 1000;
+      const ps = A.paceSec(dm, mv);
+      if (ps != null) byStep.push({ x, y: ps });
+      if (gm != null) { const pg = A.paceSec(gm, mv); if (pg != null) byGps.push({ x, y: pg }); }
     }
+    const axis = A.paceAxisRange(byStep.concat(byGps).map((p) => p.y));
     if (speedChart) speedChart.destroy();
     speedChart = new Chart($('wkSpeedChart'), {
       type: 'line',
@@ -1396,8 +1400,10 @@
         { label: 'по GPS', data: byGps, borderColor: '#39d353', backgroundColor: '#39d353', pointRadius: 2, borderWidth: 2, stepped: 'before' },
       ] },
       options: { maintainAspectRatio: false, animation: false, parsing: false,
-        plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y} км/ч, темп ${fmtDur(3600 / c.parsed.y)}/км` } } },
-        scales: { x: { type: 'linear', min: 0, title: { display: true, text: 'км' } }, y: { title: { display: true, text: 'км/ч' }, beginAtZero: false } } },
+        plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${fmtDur(c.parsed.y)} /км` } } },
+        scales: { x: { type: 'linear', min: 0, title: { display: true, text: 'км' } },
+          y: { reverse: true, min: axis.min, max: axis.max, title: { display: true, text: 'м:сс /км' },
+            ticks: { callback: (v) => fmtDur(v) } } } },
     });
     if (cadChart) cadChart.destroy();
     cadChart = new Chart($('wkCadChart'), {

@@ -1,4 +1,4 @@
-/* Workout analytics shared by web & app: stops (auto-pause), moving time, 100-step segments (speed profile),
+/* Workout analytics shared by web & app: stops (auto-pause), moving time, 100-step segments (pace profile),
    cadence profile, GPS distance with quality check. Pure functions, no DOM. */
 (function (root) {
   'use strict';
@@ -76,6 +76,24 @@
     return out;
   }
   function stoppedWithin(stops, t0, t1) { let s = 0; for (const [a, b] of stops) s += Math.max(0, Math.min(b, t1) - Math.max(a, t0)); return s; }
+  /** Pace in s/km from distance and moving time. Null if missing or blown up (faster than 2:00 or slower than 12:00). */
+  function paceSec(distM, movingS) {
+    if (!(distM > 0) || !(movingS > 0)) return null;
+    const s = movingS / (distM / 1000);
+    if (!isFinite(s) || s < 120 || s > 720) return null;
+    return Math.round(s * 10) / 10;
+  }
+  /** Y-axis range for a pace chart (s/km): auto-fit to data with padding, clipped to 2:00–12:00; default 3:00–12:00. */
+  function paceAxisRange(vals) {
+    const xs = (vals || []).filter((v) => typeof v === 'number' && isFinite(v) && v >= 120 && v <= 720);
+    if (!xs.length) return { min: 180, max: 720 };
+    const lo = Math.min(...xs), hi = Math.max(...xs);
+    const pad = 15;
+    let min = Math.max(120, Math.floor((lo - pad) / 15) * 15);
+    let max = Math.min(720, Math.ceil((hi + pad) / 15) * 15);
+    if (max - min < 60) { min = Math.max(120, min - 30); max = Math.min(720, min + 60); }
+    return { min, max };
+  }
   /** run intervals with pauses cut out, in order */
   function movingIntervals(t0, t1, stops) {
     const iv = [];
@@ -804,7 +822,7 @@
     return out;
   }
 
-  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, refinePauseStart, applyPauseOverride, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
+  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, refinePauseStart, applyPauseOverride, paceSec, paceAxisRange, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
     cleanRR, hrvStats, hrv, hrvSummary, rPeaks, ecgStats };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.FTAnalysis = api;
 })(typeof window !== 'undefined' ? window : globalThis);

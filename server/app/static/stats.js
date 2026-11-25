@@ -123,7 +123,6 @@
     const items = [
       [runs.length, 'тренировок записано'],
       [totalD > 0 ? fmtDur(totalT / (totalD / 1000)) : '—', 'средний темп за 4 недели, мин/км'],
-      [totalT > 0 ? (totalD / totalT * 3.6).toFixed(1) : '—', 'средняя скорость за 4 недели, км/ч'],
       [best ? fmtDur(best.pace_s_km) : '—', 'лучший темп (от 1 км)'],
       [longest ? (longest.distance_m / 1000).toFixed(2) : '—', 'самая длинная, км'],
       [last && last.cadence_avg ? last.cadence_avg : '—', 'каденс последней, шаг/мин'],
