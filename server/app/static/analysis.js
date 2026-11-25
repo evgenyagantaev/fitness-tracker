@@ -142,6 +142,48 @@
     for (const x of iv.slice().sort((p, q) => p[0] - q[0])) { const l = out[out.length - 1]; if (l && x[0] <= l[1] + (gap || 0)) l[1] = Math.max(l[1], x[1]); else out.push(x.slice()); }
     return out;
   }
+  // The live pause detector (RunVoice) announces after a 5 s mean of Doppler < 0.8 m/s has itself been
+  // held for 5 s, plus any deceleration — about 15 s after the runner actually stopped. The spoken
+  // «приостановлена» stays at detection time; the recorded pause starts at that real stop.
+  const PAUSE_LOOKBACK_S = 25;   // 5 s mean + 5 s still-streak + margin for a gradual slowdown
+  /** GPS speed around t over `win` s, from raw good fixes (not the 4 m gated curve, which keeps updating into a slow stop). */
+  function rawSpeedAt(good, t, win) {
+    if (!good || good.length < 2) return null;
+    const pa = nearest(good, t - win / 2, 4), pb = nearest(good, t + win / 2, 4);
+    if (!pa || !pb || pb[0] - pa[0] < win * 0.5) return null;
+    return hav(pa, pb) / (pb[0] - pa[0]);
+  }
+  /** 5-sample mean of raw speed ending at t (same shape as the live spd5); null when too few fixes. */
+  function rawSpd5(good, t) {
+    let s = 0, c = 0;
+    for (let k = t - 4; k <= t; k++) { const v = rawSpeedAt(good, k, 2); if (v != null) { s += v; c++; } }
+    return c >= 3 ? s / c : null;
+  }
+  /**
+   * Move a pause's start back to the second after the last still-running 5 s speed (or cadence)
+   * inside the detection window. Resume (`b`) is left unchanged. If nothing run-like is found,
+   * the detected start is kept (already close when it came from a step gap).
+   */
+  function refinePauseStart(series, gps, duration, a, b) {
+    const lo = Math.max(0, a - PAUSE_LOOKBACK_S);
+    let lastRun = null;
+    const good = gps && gps.good;
+    if (good && good.length >= 2) {
+      for (let t = lo; t <= a; t++) { const v = rawSpd5(good, t); if (v != null && v >= SEG.RUN_SPEED) lastRun = t; }
+    }
+    if (lastRun == null && series && series.length) {
+      const ev = [[lo, null]].concat(series.filter((p) => p[0] <= a && p[0] >= lo - 12));
+      for (let i = 1; i < ev.length; i++) {
+        const t0 = ev[i - 1][0], t1 = ev[i][0], s0 = ev[i - 1][1], s1 = ev[i][1], dt = t1 - t0;
+        if (s0 == null || dt <= 0 || dt > 12) continue;
+        if ((s1 - s0) * 60 / dt >= SEG.RUN_CAD) lastRun = t1;
+      }
+    }
+    if (lastRun == null) return a;
+    const start = lastRun + 1;
+    if (start >= b - 3) return a;
+    return Math.min(a, Math.max(lo, start));
+  }
   /** pauses inside [t0,t1]: no steps (≥ STOP_GAP_S), GPS standing still (≥ PAUSE_MIN_S) or phone-motion standing (≥ MOTION_PAUSE_MIN_S) */
   function findPauses(series, duration, gps, motion, S, t0, t1) {
     const iv = [];
@@ -171,7 +213,8 @@
         }
       }
     }
-    return mergeIntervals(iv, 3).filter((x) => x[1] - x[0] >= 5).map((x) => [Math.round(x[0] * 10) / 10, Math.round(x[1] * 10) / 10]);
+    const refined = iv.map((x) => [refinePauseStart(series, gps, duration, x[0], x[1]), x[1]]);
+    return mergeIntervals(refined, 3).filter((x) => x[1] - x[0] >= 5).map((x) => [Math.round(x[0] * 10) / 10, Math.round(x[1] * 10) / 10]);
   }
   const MOTION_STILL_G = 0.04;
   /**
@@ -678,7 +721,7 @@
     return best;
   }
 
-  const ANALYSIS_V = 4;
+  const ANALYSIS_V = 5;   // v1.8.2: pause starts are back-searched to the real stop (not the live-detector delay)
   /**
    * Derived (re-computable) fields of a workout; raw data (samples, step_series, track, session_*) is never changed.
    * @param list all workouts (for back-to-back detection; previous ones should already be derived)
@@ -711,7 +754,7 @@
     return out;
   }
 
-  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
+  const api = { analyze, segment, SEG, runBounds, signalQuality, hrStats, tailCut, previousInSession, derive, ANALYSIS_V, gpsCurve, findStops, refinePauseStart, haversine: hav, recovery, recoverySummary, HRR_MIN, STOP_GAP_S, SEG_STEPS,
     cleanRR, hrvStats, hrv, hrvSummary, rPeaks, ecgStats };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.FTAnalysis = api;
 })(typeof window !== 'undefined' ? window : globalThis);

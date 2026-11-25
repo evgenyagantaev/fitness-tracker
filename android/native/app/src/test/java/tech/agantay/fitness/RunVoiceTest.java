@@ -120,6 +120,11 @@ public class RunVoiceTest {
         assertTrue("pause announced within ~10 s of the stop: " + p, p >= 303 && p <= 312);
         assertTrue("resume right after: " + r, r >= 312 && r <= 322);
         assertEquals(1, s.count("Регистрация бега приостановлена")); assertEquals(1, s.count("Регистрация бега возобновлена"));
+        int[][] spans = s.rv.pauseSpans();
+        assertEquals(1, spans.length);
+        assertTrue("span starts at the real stop, not at the announcement: " + spans[0][0], spans[0][0] >= 298 && spans[0][0] <= 303);
+        assertTrue("resume end unshifted: " + spans[0][1], spans[0][1] >= 310 && spans[0][1] <= 315);
+        assertTrue("announcement stays later than the marker", p >= spans[0][0] + 4);
         for (int th : new int[] { 100, 120, 140 }) assertEquals("once: " + th, 1, s.count("Пульс превысил " + RuNum.words(th) + "."));
         assertTrue("100 before 120 before 140", s.when("Пульс превысил сто.") < s.when("Пульс превысил сто двадцать.") && s.when("Пульс превысил сто двадцать.") < s.when("Пульс превысил сто сорок."));
         assertTrue("summaries every 2 min of running", s.count("Текущий пульс") >= 5);
@@ -229,5 +234,30 @@ public class RunVoiceTest {
         assertEquals(810 - 12, s.rv.approxMovingS(), 25);
         assertEquals(2.8 * (900 - 90 - 12), s.rv.approxDistM(true), 120);
         assertEquals(1, s.rv.pauses);
+    }
+
+    @Test public void gradualStopPlacesThePauseMarkerAtTheRealStopNotAtDetection() {
+        // run, then 8 s of walking (1.2 m/s), then standing still: the voice fires ~15 s after 300, the span starts at 300
+        Sim s = new Sim(new Seg(0, 30, 100, 1.3), new Seg(30, 300, 165, 2.8), new Seg(300, 308, 80, 1.2),
+                new Seg(308, 360, 0, 0), new Seg(360, 700, 165, 2.8));
+        s.strap = false; s.run(700);
+        int p = s.when("Регистрация бега приостановлена"), r = s.when("Регистрация бега возобновлена");
+        assertTrue("announcement still delayed ~15 s: " + p, p >= 310 && p <= 325);
+        int[] sp = s.rv.pauseSpans()[0];
+        assertTrue("marker at the real stop: " + sp[0], sp[0] >= 298 && sp[0] <= 303);
+        assertTrue("resume unshifted: " + sp[1] + " announced at " + r, sp[1] >= 358 && sp[1] <= 365);
+        assertTrue("voice later than marker", p >= sp[0] + 8);
+    }
+
+    @Test public void truePauseStartBackSearchesTheDetectionWindow() {
+        // proxy of the 2026-11-25 run: last running mean at 58, detection at 78
+        java.util.ArrayList<Double> hist = new java.util.ArrayList<>();
+        for (int t = 40; t <= 78; t++) {
+            double inst = t <= 58 ? 2.4 : t <= 72 ? 1.1 : 0.0;
+            if (t == 62) inst = 2.0;   // one noisy fix after the stop must not pull the marker forward
+            hist.add(inst);
+        }
+        int start = RunVoice.truePauseStart(hist, 78, 78 - 10);
+        assertTrue("start after last running mean, ignoring the spike: " + start, start >= 58 && start <= 62);
     }
 }

@@ -10,7 +10,7 @@ import java.util.List;
  * Live run state (the same thresholds as the segmentation in analysis.js, but causal):
  *   IDLE   → the approach on foot: nothing is said except «Регистрация бега началась» at Старт;
  *   RUN    → cadence ≥ 135 and speed ≥ 1.7 m/s (or cadence-only / speed-only fall-backs) held for 20 s; the run clock counts here;
- *   PAUSE  → a dog stop: GPS speed (Doppler) < 0.8 m/s for 5 s, or — without GPS — no step events for 14 s. «приостановлена» / «возобновлена»;
+ *   PAUSE  → a dog stop: GPS speed (Doppler) < 0.8 m/s for 5 s, or — without GPS — no step events for 14 s. «приостановлена» is spoken at detection (≈15 s after the real stop); the stored pause starts at that real stop. Resume marker is unshifted;
  *   WALK   → 90 s without running (or a 2-minute pause): the run is over or broken off; silent, «возобновлена» when running again.
  * Everything except the start phrase is announced only in RUN (HR thresholds, 2-min summary, distance milestones).
  */
@@ -20,7 +20,7 @@ final class RunVoice {
     static final class Cfg { boolean enabled = true, events = true, hr = true, summary = true, distance = true; }
 
     static final double RUN_CAD = 135, STRONG_CAD = 150, RUN_SPEED = 1.7, SPEED_ALONE = 2.0;
-    static final int START_STREAK_S = 20, WALK_AFTER_S = 90, PAUSE_STILL_S = 5, PAUSE_NOGPS_STALE_S = 14, PAUSE_WALK_S = 120;
+    static final int START_STREAK_S = 20, WALK_AFTER_S = 90, PAUSE_STILL_S = 5, PAUSE_SPD_WIN = 5, PAUSE_LOOKBACK_S = 25, PAUSE_NOGPS_STALE_S = 14, PAUSE_WALK_S = 120;
     static final int SUMMARY_EVERY_S = 120, MILESTONE_M = 500, HR_FIRST = 100, HR_STEP = 20, HR_LAST = 220, HR_REARM = 5, LOCK_S = 25;
     static final long TTL_EVENT_MS = 30_000, TTL_HR_MS = 20_000, TTL_SUMMARY_MS = 40_000, TTL_DIST_MS = 60_000;
 
@@ -93,6 +93,36 @@ final class RunVoice {
         for (int i = spdHist.size() - 1; i >= 0 && i >= spdHist.size() - k; i--) if (!Double.isNaN(spdHist.get(i))) v.add(spdHist.get(i));
         if (v.size() < minValid) return Double.NaN;
         java.util.Collections.sort(v); return v.get(v.size() / 2);
+    }
+
+    /**
+     * Last second in the look-back window whose 5-sample mean speed was still running (≥ RUN_SPEED),
+     * plus one: that is where the runner left running pace. Falls back to {@code fallback} when the
+     * window has no run-like sample (already standing when the history begins).
+     */
+    static int truePauseStart(List<Double> spdHist, int sec, int fallback) {
+        if (spdHist == null || spdHist.isEmpty()) return fallback;
+        int last = spdHist.size() - 1;
+        int lo = Math.max(0, last - PAUSE_LOOKBACK_S + 1);
+        int lastRun = -1;
+        for (int i = lo; i <= last; i++) {
+            double s = 0; int c = 0;
+            for (int j = Math.max(0, i - PAUSE_SPD_WIN + 1); j <= i; j++) {
+                double v = spdHist.get(j);
+                if (!Double.isNaN(v)) { s += v; c++; }
+            }
+            if (c >= 3 && s / c >= RUN_SPEED) lastRun = i;
+        }
+        if (lastRun < 0) return fallback;
+        int start = sec - (last - lastRun) + 1;
+        return Math.max(0, Math.min(sec, start));
+    }
+
+    /** Closed pause spans [start, end] (start is the real stop, end is already unshifted by the resume streak). */
+    int[][] pauseSpans() {
+        int[][] a = new int[pauseSpans.size()][];
+        for (int i = 0; i < a.length; i++) a[i] = pauseSpans.get(i).clone();
+        return a;
     }
 
     private static double hrAvg(List<int[]> hr, int sec, int span, int minN) {
@@ -178,7 +208,11 @@ final class RunVoice {
                 boolean stepStill = noGpsFor >= 10 && nEv >= 2 && sec - lastEventArrival >= PAUSE_NOGPS_STALE_S && sec - tl >= 12;
                 stillStreak = gpsStill ? stillStreak + 1 : 0;
                 if (stillStreak >= PAUSE_STILL_S || stepStill) {
-                    state = S.PAUSE; pauses++; pauseStartSec = sec; spanStart = stepStill && stillStreak < PAUSE_STILL_S ? tl : sec - PAUSE_STILL_S - 2; pausedFor = 0; moveStreak = 0; stillStreak = 0;
+                    state = S.PAUSE; pauses++; pauseStartSec = sec;
+                    // the phrase is queued at detection time (it cannot be earlier); the stored span starts at the real stop
+                    int fallback = Math.max(0, sec - PAUSE_STILL_S - PAUSE_SPD_WIN);
+                    spanStart = stepStill && stillStreak < PAUSE_STILL_S ? tl : truePauseStart(spdHist, sec, fallback);
+                    pausedFor = 0; moveStreak = 0; stillStreak = 0;
                     if (cfg.events) q.offer(RunPhrases.paused(), VoiceQueue.EVENT, "pause", nowMs, TTL_EVENT_MS);
                 } else if (nonRun >= WALK_AFTER_S) { state = S.WALK; runStreak = 0; }
                 break;

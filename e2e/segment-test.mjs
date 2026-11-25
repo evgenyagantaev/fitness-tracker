@@ -81,6 +81,16 @@ const APPROACH = [0, 100, 100, 1.3], RUN1 = [100, 300, 165, 2.8], DOG = [300, 31
   const s = A.analyze(w).seg;
   near(s.t0, 100, 12, 'dog 40 s: start'); near(s.t1, 500, 12, 'dog 40 s: end (the 400 s walk after is cooldown)');
 }
+// 9. after the run stops, 16 s of walking delays the step-gap / GPS-flat marker; the start is pulled back to the real stop, the resume is not
+{
+  const w = build([APPROACH, [100, 300, 165, 2.8], [300, 316, 80, 1.0], [316, 360, 0, 0], [360, 700, 165, 2.8], COOL], 800);
+  const s = A.analyze(w).seg;
+  ok(s.pauses.length >= 1, `gradual stop: a pause is found (${JSON.stringify(s.pauses)})`);
+  if (s.pauses.length) {
+    near(s.pauses[0][0], 300, 5, 'pause start is the real stop, not ~15 s later');
+    near(s.pauses[0][1], 360, 8, 'pause end (resume) is unshifted');
+  }
+}
 // 7. beltless flag + derive: no HR blocks
 {
   const w = build([APPROACH, RUN1, RUN2, COOL], 800);
