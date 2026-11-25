@@ -798,7 +798,7 @@
         const t = ed.drag.target;
         const sec = t.type === 't0' ? sg.t0 : t.type === 't1' ? sg.t1 : t.type === 'pauseStart' ? pauses[t.idx][0] : pauses[t.idx][1];
         const hr = hrAtSec(ed.hrPts, sec);
-        const lbl = `${fmtSigned(sec)}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
+        const lbl = `${fmtSigned(sec)}${t.type === 't0' && sec === 0 ? ' (начало)' : ''}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
         drawPill(ctx, lbl, X(sec), Math.max(ca.top + 22, (ed.drag.py || ca.top + 40) - 10), '#fff', 'rgba(18,18,18,.94)', ca);
       }
       ctx.restore();
@@ -822,6 +822,7 @@
     const box = $('wkChartBox'); if (box) box.classList.remove('editing');
     const bar = $('wkChartBar'); if (bar) bar.classList.add('hidden');
     const foot = $('wkChartFoot'); if (foot) foot.classList.add('hidden');
+    const dbg = $('wkSegDebug'); if (dbg) { dbg.classList.add('hidden'); dbg.textContent = ''; }
     wkEditor = null;
   }
 
@@ -848,17 +849,31 @@
     const cut = w.tail_cut != null ? w.tail_cut : Infinity;
     const hrPts = w.session_samples && w.session_samples.length ? w.session_samples.filter((p) => p[0] < cut) : (w.samples || []);
     const canEdit = w.type === 'run';
+    const debugOn = new URLSearchParams(location.search).get('debug') === 'seg';
     const ed = {
       w, an, chart, canvas, canEdit, hrPts,
       fullMin, fullMax, viewMin, viewMax,
       mode: 'pan', drag: null, hover: null, hoverSec: null, selectedPause: null, delHits: [],
-      pts: new Map(), pinch: null, saving: false,
+      pts: new Map(), pinch: null, saving: false, debugOn, debugLines: [], moveCount: 0,
       draft: {
         t0: Math.round(seg.t0), t1: Math.round(seg.t1),
         pauses: (seg.pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]),
         src: seg.src, runTouched: false, pausesTouched: false, t0Moved: false, t1Moved: false, dirty: false,
       },
     };
+    const dbgEl = $('wkSegDebug');
+    if (dbgEl) dbgEl.classList.toggle('hidden', !debugOn);
+    function dbg(msg) {
+      if (!ed.debugOn) return;
+      const t = new Date().toISOString().slice(11, 23);
+      ed.debugLines.push(`${t} ${msg}`);
+      if (ed.debugLines.length > 25) ed.debugLines.shift();
+      if (dbgEl) {
+        const r = canvas.getBoundingClientRect();
+        const hdr = `build=${window.FT_BUILD || '?'} win=${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio} canvas=${Math.round(r.width)}x${Math.round(r.height)} view=[${ed.viewMin.toFixed(2)},${ed.viewMax.toFixed(2)}] draft={t0:${ed.draft.t0},t1:${ed.draft.t1},p:${JSON.stringify(ed.draft.pauses)}}`;
+        dbgEl.textContent = hdr + '\n' + ed.debugLines.join('\n');
+      }
+    }
     wkEditor = ed;
     chart.$editor = ed;
     xsOpt.min = viewMin; xsOpt.max = viewMax;
@@ -907,31 +922,25 @@
           if (hit) hit.d = Math.min(hit.d, 0);
         }
       }
+      const score = (c) => (c.type === 't0' || c.type === 't1') ? c.d - 6 : c.d;
       const pri = (c) => (c.type === 't0' || c.type === 't1') ? 0 : 1;
-      cands.sort((a, b) => a.d - b.d || pri(a) - pri(b));
+      cands.sort((a, b) => score(a) - score(b) || pri(a) - pri(b) || a.d - b.d);
       const marker = (cands.length && cands[0].d <= HIT) ? cands[0] : null;
       let del = null;
       for (const b of ed.delHits) {
         if (px >= b.x - 3 && px <= b.x + b.w + 3 && py >= b.y - 3 && py <= b.y + b.h + 3) { del = { type: 'pauseDel', idx: b.idx }; break; }
       }
-      // A click on × deletes the pause, even if the pause-end hairline is nearby.
-      // But t0/t1 (or their pills) still win when they overlap the badge at tight zoom.
-      if (del && marker && (marker.type === 't0' || marker.type === 't1')) return marker;
+      // × deletes the pause unless the click is right on t0/t1 (<= 6 px or on its pill/triangle)
+      if (del && marker && (marker.type === 't0' || marker.type === 't1') && marker.d <= 6) return marker;
       if (del) return del;
       return marker;
     }
 
-    function recomputeAutoPauses() {
-      const tmp = Object.assign({}, ed.w, { run_override: [ed.draft.t0, ed.draft.t1], pause_override: null });
-      const s = A.segment(tmp);
-      ed.draft.pauses = (s.pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]);
-    }
-
-    function updateReadout(sec, prefix) {
+    function updateReadout(sec, prefix, note) {
       const el = $('wkCursorReadout'); if (!el) return;
       if (sec == null) { el.textContent = ''; return; }
       const hr = hrAtSec(ed.hrPts, sec);
-      el.textContent = `${prefix ? prefix + ' ' : ''}${fmtSigned(sec)}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
+      el.textContent = `${prefix ? prefix + ' ' : ''}${fmtSigned(sec)}${note ? ' ' + note : ''}${hr != null ? ' · ' + Math.round(hr) + ' уд/мин' : ''}`;
     }
 
     function syncButtons() {
@@ -1018,6 +1027,19 @@
     canvas.draggable = false;
     canvas.setAttribute('draggable', 'false');
     canvas.addEventListener('dragstart', (e) => e.preventDefault(), sig);
+    canvas.addEventListener('selectstart', (e) => e.preventDefault(), sig);
+    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) e.preventDefault(); }, sig);
+    const suspendChartEvents = (on) => {
+      if (on) {
+        if (ed.origChartEvents === undefined) ed.origChartEvents = chart.options.events;
+        chart.options.events = [];
+        chart.options.plugins.tooltip.enabled = false;
+        if (chart.tooltip) chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+      } else {
+        if (ed.origChartEvents !== undefined) { chart.options.events = ed.origChartEvents; ed.origChartEvents = undefined; }
+        chart.options.plugins.tooltip.enabled = true;
+      }
+    };
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect(), ca = chart.chartArea;
@@ -1047,33 +1069,35 @@
       if (ed.pts.size > 2) return;
       try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
       const hit = hitTest(px, py);
+      dbg(`down ${e.pointerType} b=${e.button} px=${px.toFixed(1)},${py.toFixed(1)} hit=${hit ? hit.type + (hit.idx != null ? '[' + hit.idx + ']' : '') : 'none'} mode=${ed.mode}`);
       if (hit && hit.type === 'pauseDel') {
         ed.draft.pauses.splice(hit.idx, 1);
         ed.draft.pausesTouched = true; ed.draft.dirty = true; ed.selectedPause = null;
         syncVisuals(); return;
       }
       if (hit) {
-        ed.drag = { kind: 'marker', target: hit, startPx: px, py, pointerId: e.pointerId, moved: false };
+        ed.drag = { kind: 'marker', target: hit, startPx: px, py, pointerId: e.pointerId, moved: false, mouseFallback: false };
+        ed.moveCount = 0;
         ed.suppressDblClick = true;
         if (hit.type === 'pauseStart' || hit.type === 'pauseEnd') ed.selectedPause = hit.idx;
-        chart.options.plugins.tooltip.enabled = false;
-        if (chart.tooltip) chart.tooltip.setActiveElements([], { x: 0, y: 0 });
+        suspendChartEvents(true);
         paintChart(); return;
       }
       const ca = chart.chartArea;
       if (!ca || px < ca.left || px > ca.right || py < ca.top || py > ca.bottom) return;
       if (ed.canEdit && (ed.mode === 'addPause' || e.shiftKey)) {
         const s = clampSec(secAtPx(px), Math.ceil(ed.draft.t0), Math.floor(ed.draft.t1));
-        ed.drag = { kind: 'addPause', t0: s, t1: s };
-        chart.options.plugins.tooltip.enabled = false;
+        ed.drag = { kind: 'addPause', t0: s, t1: s, mouseFallback: false };
+        suspendChartEvents(true);
         chart.update('none'); return;
       }
       if (ed.mode === 'zoomBox' || e.ctrlKey || e.metaKey) {
-        ed.drag = { kind: 'zoomBox', x0: px, x1: px };
-        chart.options.plugins.tooltip.enabled = false;
+        ed.drag = { kind: 'zoomBox', x0: px, x1: px, mouseFallback: false };
+        suspendChartEvents(true);
         chart.update('none'); return;
       }
-      ed.drag = { kind: 'pan', startPx: px, viewMin0: ed.viewMin, viewMax0: ed.viewMax, moved: false, downSec: secAtPx(px) };
+      ed.drag = { kind: 'pan', startPx: px, viewMin0: ed.viewMin, viewMax0: ed.viewMax, moved: false, downSec: secAtPx(px), mouseFallback: false };
+      suspendChartEvents(true);
     }, sig);
 
     const onPtrMove = (e) => {
@@ -1116,9 +1140,11 @@
           const s = secAtPx(px), dur = Math.floor(ed.w.duration_s || ed.fullMax * 60);
           const t = d.target;
           if (t.type === 't0') {
+            const clamped0 = s <= 0;
             ed.draft.t0 = clampSec(s, 0, Math.min(dur - 10, ed.draft.t1 - 10));
             ed.draft.t0Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
-            updateReadout(ed.draft.t0, 'старт');
+            updateReadout(ed.draft.t0, 'старт', clamped0 ? '(начало записи)' : '');
+            if (++ed.moveCount === 1 || ed.moveCount % 12 === 0) dbg(`move#${ed.moveCount} px=${px.toFixed(1)} s=${s} -> t0=${ed.draft.t0}`);
           } else if (t.type === 't1') {
             ed.draft.t1 = clampSec(s, ed.draft.t0 + 10, Math.max(ed.draft.t0 + 10, dur));
             ed.draft.t1Moved = true; ed.draft.runTouched = true; ed.draft.dirty = true;
@@ -1155,15 +1181,17 @@
     canvas.addEventListener('pointermove', onPtrMove, sig);
 
     const endPtr = (e) => {
-      ed.pts.delete(e.pointerId);
+      if (e.pointerId != null) ed.pts.delete(e.pointerId);
       if (ed.pts.size < 2) ed.pinch = null;
       const d = ed.drag;
       if (!d) return;
+      const beforeDbg = `t0=${ed.draft.t0},t1=${ed.draft.t1},p=${JSON.stringify(ed.draft.pauses)}`;
       ed.drag = null;
-      chart.options.plugins.tooltip.enabled = true;
+      suspendChartEvents(false);
       if (d.kind === 'pan' && !d.moved && ed.canEdit) {
         const idx = ed.draft.pauses.findIndex(([a, b]) => d.downSec >= a && d.downSec <= b);
         ed.selectedPause = idx >= 0 ? (ed.selectedPause === idx ? null : idx) : null;
+        dbg(`up pan-click downSec=${d.downSec}`);
         syncVisuals(); return;
       }
       if (d.kind === 'zoomBox') {
@@ -1182,6 +1210,7 @@
           ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses.concat([[a, b]]), ed.draft.t0, ed.draft.t1);
           ed.draft.pausesTouched = true; ed.draft.dirty = true;
           ed.selectedPause = ed.draft.pauses.findIndex(([x, y]) => x <= a && y >= b);
+          dbg(`up addPause ${a}-${b}`);
           syncVisuals();
         } else { chart.update('none'); syncButtons(); }
         return;
@@ -1192,28 +1221,34 @@
         ed.suppressT = setTimeout(() => { ed.suppressDblClick = false; }, 450);
       }
       if (d.kind === 'marker') {
-        if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
-        else recomputeAutoPauses();
+        // Freeze the pause list as manual and only clip/drop against [t0, t1]; never re-run auto pause detection on drag
+        ed.draft.pausesTouched = true;
+        ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
+        dbg(`up marker(${d.target.type}) before=[${beforeDbg}] after=[t0=${ed.draft.t0},t1=${ed.draft.t1},p=${JSON.stringify(ed.draft.pauses)}]`);
         syncVisuals();
       }
     };
     canvas.addEventListener('pointerup', endPtr, sig);
-    // Canvas resize (Save row / scrollbar) can fire pointercancel and drop capture mid-drag.
-    // Keep the drag alive and re-attach capture; window pointerup will finish it.
+    // Keep drag alive across pointercancel / lostpointercapture and fall back to window mouse events if browser cancels the pointer stream
     canvas.addEventListener('pointercancel', (e) => {
-      if (ed.drag) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} return; }
+      dbg(`pointercancel drag=${ed.drag ? ed.drag.kind : 'none'}`);
+      if (ed.drag) { ed.drag.mouseFallback = true; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} return; }
       endPtr(e);
     }, sig);
     canvas.addEventListener('lostpointercapture', (e) => {
-      if (ed.drag) { try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
+      dbg(`lostpointercapture drag=${ed.drag ? ed.drag.kind : 'none'}`);
+      if (ed.drag) { ed.drag.mouseFallback = true; try { canvas.setPointerCapture(e.pointerId); } catch (_) {} }
     }, sig);
     canvas.addEventListener('pointerleave', () => {
       if (!ed.drag) { ed.hover = null; ed.hoverSec = null; updateReadout(null); chart.update('none'); }
     }, sig);
     window.addEventListener('pointermove', (e) => { if (ed.drag) onPtrMove(e); }, sig);
     window.addEventListener('pointerup', (e) => { if (ed.drag) endPtr(e); }, sig);
+    window.addEventListener('mousemove', (e) => { if (ed.drag && ed.drag.mouseFallback) onPtrMove(e); }, sig);
+    window.addEventListener('mouseup', (e) => { if (ed.drag && ed.drag.mouseFallback) endPtr(e); }, sig);
 
     canvas.addEventListener('dblclick', (e) => {
+      dbg(`dblclick suppressed=${!!ed.suppressDblClick} mode=${ed.mode} shift=${!!e.shiftKey}`);
       if (!ed.canEdit) return;
       if (ed.suppressDblClick) { ed.suppressDblClick = false; return; }
       // Plain dblclick was stealing start-marker drags (a second click after a failed grab).
@@ -1318,12 +1353,8 @@
         const v = Math.min(dur, Math.max(ed.draft.t0 + 10, Math.round(ed.draft.t1 + d)));
         ed.draft.t1 = v; ed.draft.t1Moved = true;
       }
-      ed.draft.runTouched = true; ed.draft.dirty = true;
-      if (ed.draft.pausesTouched) ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
-      else {
-        const tmp = Object.assign({}, w, { run_override: [ed.draft.t0, ed.draft.t1], pause_override: null });
-        ed.draft.pauses = (A.segment(tmp).pauses || []).map(([a, b]) => [Math.round(a), Math.round(b)]);
-      }
+      ed.draft.runTouched = true; ed.draft.pausesTouched = true; ed.draft.dirty = true;
+      ed.draft.pauses = A.applyPauseOverride(ed.draft.pauses, ed.draft.t0, ed.draft.t1);
       ed.syncVisuals();
       return;
     }

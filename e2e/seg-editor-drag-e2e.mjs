@@ -115,6 +115,23 @@ const gap = Math.abs(info.pausesX[0][0] - info.t0x);
 ok(gap < 20, `t0 and pause-start are close at default zoom: ${gap.toFixed(1)} px (reproduces the tight-hit case)`);
 ok(info.viewMax - info.viewMin > 40, `full session visible (span ${(info.viewMax - info.viewMin).toFixed(1)} min)`);
 
+// 0. Drag t0 LEFT from 15 s to 0 s on full session — must stop cleanly at 0 and NEVER spawn an auto-pause (e.g. [8, 15])
+await page.mouse.move(info.t0x, info.midY);
+await page.mouse.down();
+for (let i = 1; i <= 20; i++) await page.mouse.move(info.t0x - i, info.midY, { steps: 1 });
+const leftLive = await page.evaluate(() => !!(Chart.getChart('wkChart').$editor.drag && Chart.getChart('wkChart').$editor.drag.kind === 'marker'));
+const leftReadout = await page.textContent('#wkCursorReadout');
+await page.mouse.up();
+await page.waitForTimeout(80);
+info = await getInfo();
+ok(leftLive, 't0 left drag stayed live');
+ok(info.draft.t0 === 0, `t0 left drag clamped at 0:00 (got ${info.draft.t0})`);
+ok(leftReadout.includes('начало записи'), `readout explains 0:00 limit: "${leftReadout}"`);
+ok(JSON.stringify(info.draft.pauses) === '[[59,124]]', `t0 left drag did NOT spawn auto-pause (got ${JSON.stringify(info.draft.pauses)})`);
+await page.click('#wkSegCancel');
+await page.waitForTimeout(250);
+info = await getInfo();
+
 // 1. Drag t0 right in 1 px steps — must keep moving, stay in drag, not add a pause
 const t0Before = info.draft.t0, pausesBefore = JSON.stringify(info.draft.pauses);
 const t0Target = info.t0x + 36; // ~2 min at this zoom, past the pause start
@@ -215,6 +232,25 @@ await zoomAndDrag('pauseStart zoomed', (i) => i.pausesX[0][0], -30, async () => 
 await zoomAndDrag('pauseEnd zoomed', (i) => i.pausesX[0][1], 30, async () => page.evaluate(() => Chart.getChart('wkChart').$editor.draft.pauses[0][1]),
   (b, a) => ok(a > b + 5, `pause end moved right zoomed: ${b} -> ${a}`));
 
+// Drag t0 right into [59,124] (~90 s), then back left by ~60 s — pause trims to [t0,124], never back-shifts to 59, never spawns auto-pauses
+await page.click('#wkSegCancel');
+await page.waitForTimeout(250);
+await page.click('#wkZRun');
+await page.waitForTimeout(120);
+info = await getInfo();
+const dxRight75 = Math.round(75 * info.pxPerSec);
+await dragSteps(info.t0x, info.midY, info.t0x + dxRight75, async () => page.evaluate(() => Chart.getChart('wkChart').$editor.draft.t0));
+info = await getInfo();
+ok(info.draft.t0 >= 75 && info.draft.t0 <= 105, `t0 moved right by ~75 s: ${info.draft.t0}`);
+ok(info.draft.pauses.length === 1 && info.draft.pauses[0][0] === info.draft.t0 && info.draft.pauses[0][1] === 124,
+  `pause trimmed cleanly to [t0, 124] instead of auto back-shift (${JSON.stringify(info.draft.pauses)})`);
+const dxLeft55 = -Math.round(55 * info.pxPerSec);
+await dragSteps(info.t0x, info.midY, info.t0x + dxLeft55, async () => page.evaluate(() => Chart.getChart('wkChart').$editor.draft.t0));
+info = await getInfo();
+ok(info.draft.t0 <= 48, `t0 moved back left by ~55 s: ${info.draft.t0}`);
+ok(info.draft.pauses.length === 1 && info.draft.pauses[0][0] >= 75,
+  `moving t0 back left kept frozen pause without spawning auto-pause (${JSON.stringify(info.draft.pauses)})`);
+
 // Leave unsaved — Cancel, never Save (must not persist on the server)
 await page.click('#wkSegCancel');
 await page.waitForTimeout(250);
@@ -241,7 +277,7 @@ for (const c of combos) {
   });
   const pg = await context.newPage();
   pg.on('pageerror', (e) => { fails++; console.error('PAGEERROR', c, e.message); });
-  await pg.goto(SERVER);
+  await pg.goto(c.w === 1366 ? SERVER + '?debug=seg' : SERVER);
   await pg.fill('#loginToken', TOKEN);
   await pg.click('#loginBtn');
   await pg.waitForSelector('#app:not(.hidden)');
@@ -329,6 +365,10 @@ for (const c of combos) {
   await pg.mouse.up();
   ok(liveTri, `${c.w}x${c.h}@${c.scale} triangle drag stayed live`);
   ok(t0tri > st3.t0 + 8, `${c.w}x${c.h}@${c.scale} triangle t0 ${st3.t0} -> ${t0tri}`);
+  if (c.w === 1366) {
+    const dbgTxt = await pg.textContent('#wkSegDebug');
+    ok(await pg.isVisible('#wkSegDebug') && dbgTxt.includes('up marker(t0)'), `?debug=seg shows pointer log (${(dbgTxt || '').split('\n').length} lines)`);
+  }
   // never Save
   await br.close();
 }
