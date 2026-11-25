@@ -1,6 +1,95 @@
 /* v1.6.1: raw Polar H10 accelerometer → server (chunked) → running dynamics in the workout card; strap battery log. */
 (function () {
   'use strict';
+
+  const DYN_COLORS = { vo: '#3fa7ff', impact: '#ff6b6b', gct: '#39d353', cad: '#ffb020' };
+  /** Auto-fit a y-axis: padding plus a minimum span so two close points don't fill the height. Never clips the data. */
+  function valueAxisRange(vals, { pad = 0, minSpan = 0, lo = null, hi = null } = {}) {
+    const xs = (vals || []).filter((v) => typeof v === 'number' && isFinite(v));
+    if (!xs.length) return {};
+    const dataMin = Math.min(...xs), dataMax = Math.max(...xs);
+    let min = dataMin - pad, max = dataMax + pad;
+    if (max - min < minSpan) {
+      const mid = (min + max) / 2;
+      min = mid - minSpan / 2;
+      max = mid + minSpan / 2;
+    }
+    if (lo != null) min = Math.max(min, lo);
+    if (hi != null) max = Math.min(max, hi);
+    min = Math.min(min, dataMin);
+    max = Math.max(max, dataMax);
+    return { min, max };
+  }
+  function ysOf(data) {
+    return (data || []).map((p) => (p && typeof p === 'object' ? p.y : p));
+  }
+  function scaleOpts(pos, title, range, color, drawGrid) {
+    const o = {
+      position: pos,
+      title: { display: true, text: title, color },
+      ticks: { color, maxTicksLimit: 6 },
+      border: { color },
+      grid: { drawOnChartArea: !!drawGrid, color: drawGrid ? undefined : 'transparent' },
+    };
+    if (range && range.min != null) o.min = range.min;
+    if (range && range.max != null) o.max = range.max;
+    return o;
+  }
+  /**
+   * Four independent autoscaled axes: left = vertical oscillation (cm) + landing impact (g),
+   * right = ground contact (ms) + cadence (spm). Colors of ticks match the lines.
+   * @returns {Chart|null}
+   */
+  function drawQuadDynChart(canvasId, opts) {
+    if (!window.Chart) return null;
+    const el = typeof canvasId === 'string' ? document.getElementById(canvasId) : canvasId;
+    if (!el) return null;
+    const prev = Chart.getChart(el); if (prev) prev.destroy();
+    const s = opts.series || {};
+    const r = opts.pointRadius != null ? opts.pointRadius : 2;
+    const voR = valueAxisRange(ysOf(s.vo), { pad: 0.3, minSpan: 1.5, lo: 4, hi: 14 });
+    const imR = valueAxisRange(ysOf(s.impact), { pad: 0.15, minSpan: 0.8, lo: 1.5, hi: 6 });
+    const gR = valueAxisRange(ysOf(s.gct), { pad: 10, minSpan: 80, lo: 180, hi: 400 });
+    const cR = valueAxisRange(ysOf(s.cad), { pad: 5, minSpan: 30, lo: 120, hi: 220 });
+    const C = DYN_COLORS;
+    const parsing = opts.labels ? undefined : false;
+    const x = { type: opts.xType || (opts.labels ? 'category' : 'linear'), title: { display: !!opts.xTitle, text: opts.xTitle || '' } };
+    if (opts.xMin != null) x.min = opts.xMin;
+    if (opts.xMax != null) x.max = opts.xMax;
+    const yImp = scaleOpts('left', 'g', imR, C.impact, false);
+    yImp.afterFit = (axis) => { axis.width += 46; };
+    const yCad = scaleOpts('right', 'шаг/мин', cR, C.cad, false);
+    yCad.afterFit = (axis) => { axis.width += 56; };
+    const cfg = {
+      type: 'line',
+      data: {
+        labels: opts.labels,
+        datasets: [
+          { label: 'колебания, см', data: s.vo, borderColor: C.vo, backgroundColor: C.vo, yAxisID: 'yVo', pointRadius: r, borderWidth: 2, tension: 0.2, spanGaps: true },
+          { label: 'удар, g', data: s.impact, borderColor: C.impact, backgroundColor: C.impact, yAxisID: 'yImp', pointRadius: r, borderWidth: 2, tension: 0.2, spanGaps: true },
+          { label: 'время опоры, мс', data: s.gct, borderColor: C.gct, backgroundColor: C.gct, yAxisID: 'yGct', pointRadius: r, borderWidth: 2, tension: 0.2, spanGaps: true },
+          { label: 'каденс, шаг/мин', data: s.cad, borderColor: C.cad, backgroundColor: C.cad, yAxisID: 'yCad', pointRadius: r, borderWidth: 2, tension: 0.2, spanGaps: true },
+        ],
+      },
+      options: {
+        maintainAspectRatio: false, animation: false, parsing,
+        layout: { padding: { left: 4, right: 4 } },
+        plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${c.parsed.y}` } } },
+        scales: {
+          x,
+          yVo: scaleOpts('left', 'см', voR, C.vo, true),
+          yImp,
+          yGct: scaleOpts('right', 'мс', gR, C.gct, false),
+          yCad,
+        },
+      },
+    };
+    const chart = new Chart(el, cfg);
+    if (opts.after) opts.after(chart);
+    return chart;
+  }
+  window.FTDynChart = { draw: drawQuadDynChart, valueAxisRange, colors: DYN_COLORS };
+
   const { api, Sync } = window.FT;
   const $ = (id) => document.getElementById(id);
   const P = (window.Capacitor && window.Capacitor.Plugins) || {};
@@ -108,7 +197,7 @@
     box.innerHTML = `<h4 class="sub">Беговая динамика (акселерометр H10)</h4>` +
       (partial ? `<p class="small warn">⚠ ${esc(partial)} — показатели только за этот отрезок.</p>` : '') + `<div class="rec-metrics">` +
       items.map(([v, k]) => `<div><b>${v}</b>${k}</div>`).join('') + `</div>` +
-      (r.series && r.series.length > 1 ? '<div class="chart-box"><canvas id="wkDynChart"></canvas></div>' : '') +
+      (r.series && r.series.length > 1 ? '<div class="chart-box dyn-chart"><canvas id="wkDynChart"></canvas></div>' : '') +
       `<p class="small muted">Только беговые шаги внутри найденного бега (${r.steps_used}); паузы и по ±7 с вокруг них не учитываются. ` + (r.gct_clear_pct != null
         ? `Время опоры и полёта — по форме сигнала (приземление/отталкивание), чёткий контур у ${r.gct_clear_pct}% шагов; модель «пружины» дала бы ${fmt(r.gct_model_ms)} мс.`
         : 'Время опоры и полёта оценены по модели «пружины» из пика вертикальной перегрузки (±10–20 мс).') +
@@ -118,14 +207,11 @@
     if (chart) { chart.destroy(); chart = null; }
     if (window.Chart && r.series && r.series.length > 1) {
       const X = (i) => r.series.map((p) => ({ x: p[0] / 60, y: p[i] }));
-      const ds = [{ label: 'вертикальные колебания, см', data: X(2), borderColor: '#3fa7ff', backgroundColor: '#3fa7ff', yAxisID: 'y', pointRadius: 2, borderWidth: 2, tension: 0.2 }];
-      if (run) ds.push({ label: 'время опоры, мс', data: X(3), borderColor: '#39d353', backgroundColor: '#39d353', yAxisID: 'y3', pointRadius: 2, borderWidth: 2, tension: 0.2 });
-      chart = new Chart($('wkDynChart'), { type: 'line', data: { datasets: ds },
-        options: { maintainAspectRatio: false, animation: false, parsing: false,
-          scales: { x: { type: 'linear', title: { display: true, text: 'мин' } },
-            y: { position: 'left', grace: '30%', title: { display: true, text: 'см' } },
-            y3: { display: run, position: 'right', grace: '30%', grid: { display: false }, title: { display: true, text: 'мс' } } } } });
-      if (window.FTWorkout && window.FTWorkout.markSeg && w.seg) window.FTWorkout.markSeg(chart, w.seg);
+      chart = drawQuadDynChart('wkDynChart', {
+        series: { vo: X(2), impact: X(4), gct: run ? X(3) : [], cad: X(1) },
+        xType: 'linear', xTitle: 'мин', pointRadius: 2,
+        after: (c) => { if (window.FTWorkout && window.FTWorkout.markSeg && w.seg) window.FTWorkout.markSeg(c, w.seg); },
+      });
     }
   }
 

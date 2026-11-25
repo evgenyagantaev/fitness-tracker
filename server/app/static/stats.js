@@ -26,23 +26,6 @@
     if (charts[id]) charts[id].destroy();
     charts[id] = new Chart(document.getElementById(id), cfg);
   }
-  /** Auto-fit a y-axis: padding plus a minimum span so two close points don't fill the height. Never clips the data. */
-  function valueAxisRange(vals, { pad = 0, minSpan = 0, lo = null, hi = null } = {}) {
-    const xs = (vals || []).filter((v) => typeof v === 'number' && isFinite(v));
-    if (!xs.length) return {};
-    const dataMin = Math.min(...xs), dataMax = Math.max(...xs);
-    let min = dataMin - pad, max = dataMax + pad;
-    if (max - min < minSpan) {
-      const mid = (min + max) / 2;
-      min = mid - minSpan / 2;
-      max = mid + minSpan / 2;
-    }
-    if (lo != null) min = Math.max(min, lo);
-    if (hi != null) max = Math.min(max, hi);
-    min = Math.min(min, dataMin);
-    max = Math.max(max, dataMax);
-    return { min, max };
-  }
 
   // one chart per exercise (pull-ups and push-ups have incomparable scales): canvases are created on demand
   function perExercise(boxId, prefix, exercises, cfgFor) {
@@ -167,33 +150,18 @@
     if (!rs.length) return;
     const labels = rs.map((r) => { const d = new Date(r.started_at); return `${d.getDate()}.${String(d.getMonth() + 1).padStart(2, '0')}`; });
     const dots = rs.length <= 4 ? 3 : 2;
-    const gct = rs.map((r) => r.dyn.gct_ms);
-    const gScale = valueAxisRange(gct, { pad: 10, minSpan: 80, lo: 180, hi: 400 });
-    chart('dynChart', {
-      type: 'line',
-      data: { labels, datasets: [
-        { label: 'колебания, см', data: rs.map((r) => r.dyn.vo_cm), borderColor: '#3fa7ff', backgroundColor: '#3fa7ff', yAxisID: 'y', tension: 0.2, pointRadius: dots, spanGaps: true },
-        { label: 'верт. соотношение, %', data: rs.map((r) => r.dyn.vratio_pct), borderColor: '#a371f7', backgroundColor: '#a371f7', yAxisID: 'y', tension: 0.2, pointRadius: dots, spanGaps: true },
-        { label: 'время опоры, мс', data: gct, borderColor: '#39d353', backgroundColor: '#39d353', yAxisID: 'g', tension: 0.2, pointRadius: dots, spanGaps: true },
-      ] },
-      options: { maintainAspectRatio: false, animation: false,
-        scales: { y: { position: 'left', beginAtZero: true, title: { display: true, text: 'см / %' } },
-          g: { position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'мс' }, min: gScale.min, max: gScale.max } } },
-    });
-    const cad = rs.map((r) => r.dyn.cadence);
-    const hasCad = cad.some((v) => typeof v === 'number' && isFinite(v));
-    const cadTitle = document.getElementById('dynCadTitle');
-    const cadWrap = document.getElementById('dynCadWrap');
-    if (cadTitle) cadTitle.classList.toggle('hidden', !hasCad);
-    if (cadWrap) cadWrap.classList.toggle('hidden', !hasCad);
-    if (!hasCad || !document.getElementById('dynCadChart')) return;
-    const cScale = valueAxisRange(cad, { pad: 5, minSpan: 30, lo: 120, hi: 220 });
-    chart('dynCadChart', {
-      type: 'line',
-      data: { labels, datasets: [{ label: 'каденс', data: cad, borderColor: '#ffb020', backgroundColor: 'rgba(255,176,32,.15)', fill: true, tension: 0.2, pointRadius: dots, spanGaps: true }] },
-      options: { maintainAspectRatio: false, animation: false,
-        plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `каденс: ${c.parsed.y} шаг/мин` } } },
-        scales: { y: { title: { display: true, text: 'шаг/мин' }, min: cScale.min, max: cScale.max } } },
+    if (!window.FTDynChart) return;
+    if (charts.dynChart) { charts.dynChart.destroy(); delete charts.dynChart; }
+    if (charts.dynCadChart) { charts.dynCadChart.destroy(); delete charts.dynCadChart; }
+    charts.dynChart = window.FTDynChart.draw('dynChart', {
+      labels,
+      series: {
+        vo: rs.map((r) => r.dyn.vo_cm),
+        impact: rs.map((r) => r.dyn.impact_g),
+        gct: rs.map((r) => r.dyn.gct_ms),
+        cad: rs.map((r) => r.dyn.cadence),
+      },
+      pointRadius: dots,
     });
   }
   async function refreshRuns() {

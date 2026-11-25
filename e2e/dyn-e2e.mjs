@@ -44,28 +44,40 @@ await page.waitForTimeout(500);
 await (await page.$('#wkDynamics')).screenshot({ path: '../screenshot-dynamics-detail.png' });
 await page.click('.tabs button[data-tab=stats]');
 await page.waitForSelector('#dynTrend:not(.hidden)', { timeout: 15000 });
-await page.waitForFunction(() => window.Chart && Chart.getChart('dynChart') && Chart.getChart('dynCadChart'), null, { timeout: 10000 });
+await page.waitForFunction(() => window.Chart && Chart.getChart('dynChart') && !document.getElementById('dynCadChart'), null, { timeout: 10000 });
 const trend = await page.evaluate(() => {
-  const d = Chart.getChart('dynChart'), c = Chart.getChart('dynCadChart');
-  const g = d && d.data.datasets.find((x) => x.yAxisID === 'g');
+  const d = Chart.getChart('dynChart');
+  if (!d) return null;
+  const by = (id) => d.data.datasets.find((x) => x.yAxisID === id);
+  const sc = d.options.scales;
+  const tickColor = (id) => sc[id] && sc[id].ticks && sc[id].ticks.color;
   return {
-    dynLabels: d ? d.data.datasets.map((x) => x.label) : [],
-    gMin: d && d.options.scales.g.min, gMax: d && d.options.scales.g.max,
-    gData: g ? g.data.filter((v) => v != null) : [],
-    cadTitle: (document.getElementById('dynCadTitle') || {}).textContent,
-    cadAxis: c && c.options.scales.y.title && c.options.scales.y.title.text,
-    cadMin: c && c.options.scales.y.min, cadMax: c && c.options.scales.y.max,
-    cadData: c ? c.data.datasets[0].data.filter((v) => v != null) : [],
-    cadHidden: !!(c && c.data.datasets[0].hidden),
+    labels: d.data.datasets.map((x) => x.label),
+    ids: d.data.datasets.map((x) => x.yAxisID),
+    axes: Object.keys(sc).filter((k) => k !== 'x'),
+    colors: {
+      vo: [by('yVo') && by('yVo').borderColor, tickColor('yVo')],
+      impact: [by('yImp') && by('yImp').borderColor, tickColor('yImp')],
+      gct: [by('yGct') && by('yGct').borderColor, tickColor('yGct')],
+      cad: [by('yCad') && by('yCad').borderColor, tickColor('yCad')],
+    },
+    cad: { min: sc.yCad && sc.yCad.min, max: sc.yCad && sc.yCad.max, data: (by('yCad') || {}).data, title: sc.yCad && sc.yCad.title && sc.yCad.title.text },
+    gct: { min: sc.yGct && sc.yGct.min, max: sc.yGct && sc.yGct.max, data: (by('yGct') || {}).data },
+    impact: { data: ((by('yImp') || {}).data || []).filter((v) => v != null) },
+    noCadChart: !document.getElementById('dynCadChart') && !document.getElementById('dynCadTitle'),
   };
 });
-ok(!trend.dynLabels.includes('каденс') && trend.dynLabels.includes('время опоры, мс'), 'cadence is not on the cm/% chart: ' + JSON.stringify(trend.dynLabels));
-ok(/Каденс по пробежкам/.test(trend.cadTitle) && trend.cadAxis === 'шаг/мин' && !trend.cadHidden,
-  'cadence has its own visible chart in шаг/мин');
-ok(trend.cadData.length >= 2 && trend.cadData.every((v) => v >= 100 && v <= 250) && (trend.cadMax - trend.cadMin) >= 25,
-  `cadence axis is readable: data ${trend.cadData}, axis ${trend.cadMin}–${trend.cadMax}`);
-ok(trend.gData.length >= 1 && (trend.gMax - trend.gMin) >= 60,
-  `GCT axis has a sensible span: data ${trend.gData}, axis ${trend.gMin}–${trend.gMax}`);
+ok(trend && trend.noCadChart, 'separate cadence chart is gone');
+ok(trend && !trend.labels.some((s) => /соотношен/.test(s)) && trend.labels.includes('удар, g') && trend.labels.includes('каденс, шаг/мин') && trend.labels.includes('колебания, см') && trend.labels.includes('время опоры, мс'),
+  'four series, no vertical ratio: ' + JSON.stringify(trend && trend.labels));
+ok(trend && ['yVo', 'yImp', 'yGct', 'yCad'].every((id) => trend.ids.includes(id)), 'four independent axes: ' + JSON.stringify(trend && trend.ids));
+ok(trend && trend.colors.vo[0] === trend.colors.vo[1] && trend.colors.impact[0] === trend.colors.impact[1] && trend.colors.gct[0] === trend.colors.gct[1] && trend.colors.cad[0] === trend.colors.cad[1],
+  'axis tick colors match the lines: ' + JSON.stringify(trend && trend.colors));
+ok(trend && trend.cad.title === 'шаг/мин' && trend.cad.data.length >= 2 && (trend.cad.max - trend.cad.min) >= 25,
+  `cadence axis is readable: data ${trend && trend.cad.data}, axis ${trend && trend.cad.min}–${trend && trend.cad.max}`);
+ok(trend && trend.gct.data.length >= 1 && (trend.gct.max - trend.gct.min) >= 60,
+  `GCT axis has a sensible span: data ${trend && trend.gct.data}, axis ${trend && trend.gct.min}–${trend && trend.gct.max}`);
+ok(trend && trend.impact.data.length >= 1, 'landing impact series is present: ' + JSON.stringify(trend && trend.impact.data));
 await page.waitForTimeout(400);
 await (await page.$('#dynTrend')).screenshot({ path: '../screenshot-dynamics-trend.png' });
 await browser.close();

@@ -83,6 +83,7 @@ body.native .web-only, body:not(.native) .native-only { display: none !important
 .live-grid b { display: block; font-size: 20px; }
 .live-grid span { font-size: 11px; color: #999; }
 .small-chart { height: 150px; }
+.dyn-chart { height: 280px; }
 .ex-chart { height: 190px; }
 #repsCharts h4.sub:first-child, #dailyCharts h4.sub:first-child { margin-top: 4px; }
 .btn.big { padding: 14px 28px; font-size: 18px; }
