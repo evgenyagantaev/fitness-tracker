@@ -166,3 +166,6 @@ select { background: #222; color: #eee; border: 1px solid #444; border-radius: 6
 .pause-chip.sel { background: rgba(255,170,40,.32); border-color: #ffd166; }
 .pause-chip .p-del { background: none; border: none; color: #ffb020; font-size: 14px; line-height: 1; padding: 0 2px; cursor: pointer; }
 .pause-chip .p-del:hover { color: #ff6b6b; }
+
+#wkChartBox.editing canvas { -webkit-user-drag: none; user-drag: none; }
+.web-build { font-size: 11px; color: #666; text-align: center; padding: 10px 8px 14px; letter-spacing: 0.02em; }

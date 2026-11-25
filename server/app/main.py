@@ -12,8 +12,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
+import hashlib
+import json
 
 from . import dynamics, phone_motion, stats
 from .db import Database
@@ -21,6 +24,62 @@ from .db import Database
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ID_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 STATIC_DIR = Path(os.environ.get("FITNESS_STATIC_DIR", Path(__file__).parent / "static"))
+_ASSET_RE = re.compile(
+    r'(?P<pre>(?:src|href)=")(?P<path>(?:vendor/)?[A-Za-z0-9_./-]+\.(?:js|css))"'
+)
+
+
+def web_build(static_dir: Path | None = None) -> str:
+    """Short content hash of JS/CSS, used to cache-bust the web UI."""
+    root = static_dir or STATIC_DIR
+    h = hashlib.sha256()
+    if root.is_dir():
+        for pth in sorted(root.rglob("*")):
+            if pth.is_file() and pth.suffix.lower() in {".js", ".css"}:
+                h.update(pth.relative_to(root).as_posix().encode())
+                h.update(b"\0")
+                h.update(pth.read_bytes())
+    return h.hexdigest()[:8]
+
+
+def render_index_html(static_dir: Path, build: str) -> str:
+    html = (static_dir / "index.html").read_text(encoding="utf-8")
+    html = _ASSET_RE.sub(rf'\g<pre>\g<path>?v={build}"', html)
+    boot = (
+        f'<script>window.FT_BUILD={json.dumps(build)};'
+        'document.addEventListener("DOMContentLoaded",function(){'
+        'var b=window.FT_BUILD;if(!b)return;'
+        'var f=document.getElementById("webBuildFoot");'
+        'if(f){f.hidden=false;f.textContent="сборка "+b;}'
+        'var s=document.getElementById("webBuild");'
+        'if(s){s.hidden=false;s.textContent="Сборка сайта: "+b;}'
+        '});</script>\n'
+    )
+    html = html.replace("<body>", "<body>\n  " + boot, 1)
+    return html
+
+
+class VersionedStaticFiles(StaticFiles):
+    """Cache-Control: no-cache for HTML and unversioned JS/CSS; long cache when ?v= is present."""
+
+    async def get_response(self, path: str, scope):
+        resp = await super().get_response(path, scope)
+        if resp.status_code >= 400:
+            return resp
+        qs = (scope.get("query_string") or b"").decode("latin-1")
+        lowered = (path or "").lower()
+        if lowered.endswith(".html") or lowered in ("", ".", "/"):
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            resp.headers["Pragma"] = "no-cache"
+            resp.headers["Expires"] = "0"
+        elif "v=" in qs and lowered.endswith((".js", ".css", ".png", ".svg", ".woff", ".woff2", ".webmanifest")):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif lowered.endswith((".js", ".css")):
+            # Yandex Browser caches unversioned scripts aggressively
+            resp.headers["Cache-Control"] = "no-cache"
+        else:
+            resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
 
 
 def _check_date(v: str) -> str:
@@ -247,7 +306,10 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "rev": db.current_rev()}
+        out = {"ok": True, "rev": db.current_rev()}
+        if getattr(app.state, "web_build", None):
+            out["web"] = app.state.web_build
+        return out
 
     @app.get("/api/auth/check", dependencies=A)
     def auth_check():
@@ -545,7 +607,22 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
         return t
 
     if STATIC_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="web")
+        build = web_build(STATIC_DIR)
+        app.state.web_build = build
+
+        def index_page():
+            return HTMLResponse(
+                render_index_html(STATIC_DIR, build),
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+
+        app.add_api_route("/", index_page, methods=["GET", "HEAD"], include_in_schema=False)
+        app.add_api_route("/index.html", index_page, methods=["GET", "HEAD"], include_in_schema=False)
+        app.mount("/", VersionedStaticFiles(directory=STATIC_DIR, html=False), name="web")
 
     return app
 

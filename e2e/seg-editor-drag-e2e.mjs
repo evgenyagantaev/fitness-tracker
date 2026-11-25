@@ -225,5 +225,113 @@ ok(Array.isArray(srv.pause_override) && srv.pause_override[0][0] === 59 && srv.p
   `server pause_override unchanged: ${JSON.stringify(srv.pause_override)}`);
 
 await browser.close();
+
+// Extra viewports / devicePixelRatio (Yandex on typical desktop: 1920 and 1366, DPR 1–1.5)
+const combos = [
+  { w: 1920, h: 1080, scale: 1 },
+  { w: 1920, h: 1080, scale: 1.25 },
+  { w: 1366, h: 768, scale: 1.5 },
+];
+for (const c of combos) {
+  const br = await chromium.launch({ executablePath: CHROME, args: ['--no-sandbox'] });
+  const context = await br.newContext({
+    viewport: { width: c.w, height: c.h },
+    deviceScaleFactor: c.scale,
+    locale: 'ru-RU', timezoneId: 'Europe/Moscow',
+  });
+  const pg = await context.newPage();
+  pg.on('pageerror', (e) => { fails++; console.error('PAGEERROR', c, e.message); });
+  await pg.goto(SERVER);
+  await pg.fill('#loginToken', TOKEN);
+  await pg.click('#loginBtn');
+  await pg.waitForSelector('#app:not(.hidden)');
+  const build = await pg.evaluate(() => window.FT_BUILD);
+  ok(!!build, `build string present at ${c.w}x${c.h}@${c.scale}: ${build}`);
+  ok(await pg.evaluate(() => !!document.querySelector('script[src*="workout.js?v="]')), `workout.js is cache-busted at ${c.w}x${c.h}`);
+  const foot = await pg.textContent('#webBuildFoot');
+  ok(foot && foot.includes(build), `footer shows сборка ${build} (got "${foot}")`);
+  await pg.click('.tabs button[data-tab=workout]');
+  await pg.waitForSelector(`.wk-item[data-id="${wid}"]`);
+  await pg.click(`.wk-item[data-id="${wid}"]`);
+  await pg.waitForSelector('#wkChartBar:not(.hidden)');
+  await pg.waitForTimeout(250);
+  await pg.locator('#wkChartBox').scrollIntoViewIfNeeded();
+  const st = await pg.evaluate(() => {
+    const ch = Chart.getChart('wkChart');
+    const r = ch.canvas.getBoundingClientRect();
+    const xs = ch.scales.x, ca = ch.chartArea, ed = ch.$editor;
+    return {
+      t0: ed.draft.t0, t0x: r.left + xs.getPixelForValue(ed.draft.t0 / 60),
+      midY: r.top + (ca.top + ca.bottom) / 2,
+      pill: (ed.markerHits || []).filter((h) => h.type === 't0').sort((a, b) => b.w - a.w)[0],
+      left: r.left, top: r.top,
+    };
+  });
+  // hairline drag
+  await pg.mouse.move(st.t0x, st.midY);
+  await pg.mouse.down();
+  const n = 24;
+  const mid = [];
+  for (let i = 1; i <= n; i++) {
+    await pg.mouse.move(st.t0x + (36 * i) / n, st.midY, { steps: 1 });
+    if (i === 6 || i === n) mid.push(await pg.evaluate(() => {
+      const ed = Chart.getChart('wkChart').$editor;
+      return { t0: ed.draft.t0, live: !!(ed.drag && ed.drag.kind === 'marker') };
+    }));
+  }
+  ok(mid[mid.length - 1].live, `${c.w}x${c.h}@${c.scale} hairline drag stayed live`);
+  const after = await pg.evaluate(() => Chart.getChart('wkChart').$editor.draft.t0);
+  await pg.mouse.up();
+  ok(after > st.t0 + 10, `${c.w}x${c.h}@${c.scale} hairline t0 ${st.t0} -> ${after}`);
+  if (await pg.isVisible('#wkSegCancel')) { await pg.click('#wkSegCancel'); await pg.waitForTimeout(300); await pg.locator('#wkChartBox').scrollIntoViewIfNeeded(); }
+
+  // plashka drag
+  const st2 = await pg.evaluate(() => {
+    const ch = Chart.getChart('wkChart');
+    const r = ch.canvas.getBoundingClientRect();
+    const ed = ch.$editor;
+    const pill = (ed.markerHits || []).filter((h) => h.type === 't0').sort((a, b) => b.w - a.w)[0];
+    const xs = ch.scales.x, ca = ch.chartArea;
+    return {
+      t0: ed.draft.t0,
+      pillX: pill ? r.left + pill.x + pill.w - 6 : r.left + xs.getPixelForValue(ed.draft.t0 / 60),
+      pillY: pill ? r.top + pill.y + pill.h / 2 : r.top + (ca.top + ca.bottom) / 2,
+    };
+  });
+  await pg.mouse.move(st2.pillX, st2.pillY);
+  await pg.mouse.down();
+  for (let i = 1; i <= 20; i++) await pg.mouse.move(st2.pillX + (30 * i) / 20, st2.pillY, { steps: 1 });
+  const livePill = await pg.evaluate(() => !!(Chart.getChart('wkChart').$editor.drag && Chart.getChart('wkChart').$editor.drag.kind === 'marker'));
+  const t0pill = await pg.evaluate(() => Chart.getChart('wkChart').$editor.draft.t0);
+  await pg.mouse.up();
+  ok(livePill, `${c.w}x${c.h}@${c.scale} plashka drag stayed live`);
+  ok(t0pill > st2.t0 + 8, `${c.w}x${c.h}@${c.scale} plashka t0 ${st2.t0} -> ${t0pill}`);
+  if (await pg.isVisible('#wkSegCancel')) { await pg.click('#wkSegCancel'); await pg.waitForTimeout(300); await pg.locator('#wkChartBox').scrollIntoViewIfNeeded(); }
+
+  // triangle (top handle) drag
+  const st3 = await pg.evaluate(() => {
+    const ch = Chart.getChart('wkChart');
+    const r = ch.canvas.getBoundingClientRect();
+    const ed = ch.$editor;
+    const tri = (ed.markerHits || []).filter((h) => h.type === 't0').sort((a, b) => a.h - b.h)[0];
+    const xs = ch.scales.x, ca = ch.chartArea;
+    return {
+      t0: ed.draft.t0,
+      x: tri ? r.left + tri.x + tri.w / 2 : r.left + xs.getPixelForValue(ed.draft.t0 / 60),
+      y: tri ? r.top + tri.y + tri.h / 2 : r.top + ca.top + 4,
+    };
+  });
+  await pg.mouse.move(st3.x, st3.y);
+  await pg.mouse.down();
+  for (let i = 1; i <= 20; i++) await pg.mouse.move(st3.x + (30 * i) / 20, st3.y, { steps: 1 });
+  const liveTri = await pg.evaluate(() => !!(Chart.getChart('wkChart').$editor.drag && Chart.getChart('wkChart').$editor.drag.kind === 'marker'));
+  const t0tri = await pg.evaluate(() => Chart.getChart('wkChart').$editor.draft.t0);
+  await pg.mouse.up();
+  ok(liveTri, `${c.w}x${c.h}@${c.scale} triangle drag stayed live`);
+  ok(t0tri > st3.t0 + 8, `${c.w}x${c.h}@${c.scale} triangle t0 ${st3.t0} -> ${t0tri}`);
+  // never Save
+  await br.close();
+}
+
 console.log(fails ? `SEG EDITOR DRAG E2E: ${fails} FAILED` : 'SEG EDITOR DRAG E2E PASSED');
 process.exit(fails ? 1 : 0);

@@ -1015,6 +1015,9 @@
     if ($('wkSegReset')) $('wkSegReset').addEventListener('click', () => resetEditorToAuto(ed), sig);
 
     // Canvas pointer & wheel interactions
+    canvas.draggable = false;
+    canvas.setAttribute('draggable', 'false');
+    canvas.addEventListener('dragstart', (e) => e.preventDefault(), sig);
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect(), ca = chart.chartArea;
@@ -1031,6 +1034,8 @@
 
     canvas.addEventListener('pointerdown', (e) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      // preventDefault stops Yandex superdrag / smart-scroll from stealing the gesture
+      e.preventDefault();
       const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
       ed.pts.set(e.pointerId, { x: px, y: py });
       if (ed.pts.size === 2) {
@@ -1073,6 +1078,7 @@
 
     const onPtrMove = (e) => {
       if (e._ftEdMove) return; e._ftEdMove = true;
+      if (ed.drag) e.preventDefault();
       const rect = canvas.getBoundingClientRect(), px = e.clientX - rect.left, py = e.clientY - rect.top;
       if (ed.pts.has(e.pointerId)) ed.pts.set(e.pointerId, { x: px, y: py });
       if (ed.pinch && ed.pts.size >= 2) {

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#000000">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
   <title>Фитнес-трекер</title>
   <link rel="icon" href="icon.png">
   <link rel="manifest" href="manifest.webmanifest">
@@ -357,9 +358,11 @@
           <div id="syncInfo" class="small muted"></div>
           <button id="syncNow" class="btn">Синхронизировать сейчас</button>
           <button id="logout" class="btn danger web-only">Выйти</button>
+          <p id="webBuild" class="small muted web-only" hidden></p>
         </div>
       </div>
     </section>
+    <div id="webBuildFoot" class="web-build web-only" hidden></div>
   </div>
 
   <div id="notification">
