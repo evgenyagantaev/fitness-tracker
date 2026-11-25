@@ -21,7 +21,7 @@ from array import array
 from statistics import median
 from typing import Any
 
-DYN_V = 3
+DYN_V = 4
 G = 9.80665
 
 
@@ -328,6 +328,7 @@ def analyze(data: bytes, frames_csv: str, meta: dict[str, Any] | None = None,
     zones = [(float(a) - excl_s, float(b) + excl_s) for a, b in (seg.get("pauses") or [])]
     r0, r1 = seg.get("t0"), seg.get("t1")
     n_all = len(steps)
+    steps_all = list(steps)
     if r0 is not None and r1 is not None and wk_type == "run" and seg.get("src") != "none":
         def _in_run(st: dict) -> bool:
             t = (_time_of(st["i"], fr_idx, fr_t, t0, dt) - w_start) / 1000.0
@@ -399,15 +400,35 @@ def analyze(data: bytes, frames_csv: str, meta: dict[str, Any] | None = None,
         if res.get("vo_cm"):
             res["vratio_pct"] = round(res["vo_cm"]["med"] / (step_len * 100) * 100, 1)
     # per-minute series: [t_s from the workout start, cadence, vo_cm, gct_ms, impact_g]
+    # Cadence is steps counted in the minute ÷ moving time (pauses and time before the ACC started are
+    # excluded). 60/median(step interval) only describes the running steps and inflates a mixed minute
+    # (a 15 s jog at 180 plus a walk still showed 180). VO / GCT / impact stay medians of running steps.
     series = []
+    pause_iv = [(float(a), float(b)) for a, b in (seg.get("pauses") or [])]
+    acc_t = max(0.0, acc_lag)
+    lo = float(r0) if r0 is not None and r1 is not None and is_run and seg.get("src") != "none" else 0.0
+    hi = float(r1) if r0 is not None and r1 is not None and is_run and seg.get("src") != "none" else 1e12
+    def _t_s(st: dict) -> float:
+        return (_time_of(st["i"], fr_idx, fr_t, t0, dt) - w_start) / 1000.0
     by_min: dict[int, list[dict]] = {}
-    for s in run_steps:
-        by_min.setdefault(int(max(0.0, _time_of(s["i"], fr_idx, fr_t, t0, dt) - w_start) / 1000 // 60), []).append(s)
-    for m_i in sorted(by_min):
-        g = by_min[m_i]
-        if len(g) < 20:
+    for s in steps_all:
+        t = _t_s(s)
+        if t < lo or t > hi or any(a <= t <= b for a, b in pause_iv):
             continue
-        series.append([m_i * 60, round(60 / median([s["T"] for s in g])), round(median([s["vo"] for s in g]) * 100, 1),
-                       round(median([s["tc"] for s in g]) * 1000) if is_run else None, round(median([s["impact"] for s in g]), 2)])
+        by_min.setdefault(int(max(0.0, t) // 60), []).append(s)
+    for m_i in sorted(by_min):
+        a, b = m_i * 60.0, (m_i + 1) * 60.0
+        aa, bb = max(a, lo, acc_t), min(b, hi)
+        paused = sum(max(0.0, min(bb, pb) - max(aa, pa)) for pa, pb in pause_iv)
+        mv = max(0.0, (bb - aa) - paused)
+        g = by_min[m_i]
+        if mv < 20 or len(g) < 10:
+            continue
+        cad = round(len(g) * 60.0 / mv)
+        src = [s for s in g if s.get("run")] or g
+        vo = round(median([s["vo"] for s in src if "vo" in s]) * 100, 1) if any("vo" in s for s in src) else None
+        gct = round(median([s["tc"] for s in src if "tc" in s]) * 1000) if is_run and any("tc" in s for s in src) else None
+        imp = round(median([s["impact"] for s in src if "impact" in s]), 2) if any("impact" in s for s in src) else None
+        series.append([m_i * 60, cad, vo, gct, imp])
     res["series"] = series
     return res

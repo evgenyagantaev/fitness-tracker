@@ -201,3 +201,16 @@ def test_dynamics_only_inside_run_and_away_from_pauses():
     assert r["steps_used"] <= (120 - 40 - 10 - 14) * 170 / 60 + 8      # run − pause − 7 s each side
     # no step inside the excluded zone: the series never has a minute-bucket for those seconds beyond the run window
     assert abs(r["cadence"]["med"] - 170) <= 1
+
+
+def test_series_cadence_is_steps_over_time_not_median_interval():
+    """A minute that is half rest, half 170 spm must not be reported as 170."""
+    d, f, _ = synth(dur=60, rest=30)
+    t0 = 1795515945678
+    r = D.analyze(d, f, {"fs": 200}, {"type": "run", "started_at": t0, "seg": {"src": "auto", "t0": 0, "t1": 60, "pauses": []}})
+    assert r["ok"] and r["series"], r
+    # ~30 s × 170 / 60 ≈ 85 steps in a 60 s bucket (ACC starts ~with the file)
+    cad = r["series"][0][1]
+    assert 70 <= cad <= 110, cad
+    # the typical-running cadence on the card stays near 170
+    assert abs(r["cadence"]["med"] - 170) <= 2
