@@ -11,6 +11,11 @@ import java.util.List;
  *   IDLE   → the approach on foot: nothing is said except «Регистрация бега началась» at Старт;
  *   RUN    → cadence ≥ 135 and speed ≥ 1.7 m/s (or cadence-only / speed-only fall-backs) held for 20 s; the run clock counts here;
  *   PAUSE  → a dog stop: GPS speed (Doppler) < 0.8 m/s for 5 s, or — without GPS — no step events for 14 s. «приостановлена» is spoken at detection (≈15 s after the real stop); the stored pause starts at that real stop. Resume marker is unshifted;
+ *   v1.13: with the H10 accelerometer streaming, the strap's real-time steps (one value per second, ~1 s latency) decide instead:
+ *            stop = no strap step for STRAP_STILL_S s (spoken ≈4 s after the last step) or walking cadence (< STRAP_WALK_CAD) for
+ *            STRAP_WALK_S s; resume = strap cadence ≥ STRAP_RUN_CAD for STRAP_RESUME_S s. GPS can no longer pause a run while the
+ *            strap still counts running steps (slow runs at 7–9 min/km hover around the GPS speed thresholds).
+ *            Without the strap, the phone step counter (batched every ~10 s on MIUI) gates the GPS rules.
  *   WALK   → 90 s without running (or a 2-minute pause): the run is over or broken off; silent, «возобновлена» when running again.
  * Everything except the start phrase is announced only in RUN (HR thresholds, 2-min summary, distance milestones).
  */
@@ -21,6 +26,11 @@ final class RunVoice {
 
     static final double RUN_CAD = 135, STRONG_CAD = 150, RUN_SPEED = 1.7, SPEED_ALONE = 2.0;
     static final int START_STREAK_S = 20, WALK_AFTER_S = 90, PAUSE_STILL_S = 5, PAUSE_SPD_WIN = 5, PAUSE_LOOKBACK_S = 25, PAUSE_NOGPS_STALE_S = 14, PAUSE_WALK_S = 120;
+    // v1.13: strap (H10 accelerometer) steps
+    static final double STRAP_RUN_CAD = 125, STRAP_WALK_CAD = 110, STRAP_STILL_CAD = 40;
+    static final int STRAP_LIVE_S = 4, STRAP_STILL_S = 3, STRAP_WALK_S = 10, STRAP_RESUME_S = 2, STRAP_WALK_RESUME_S = 5;
+    static final double GPS_RESUME_SPEED = 1.5;   // was 2.0 m/s (8:20 min/km): too close to a slow run's GPS speed
+    static final int GPS_PAUSE_MAX_WAIT_S = 12;   // GPS says «still» but the last phone step batch said «running»: wait at most this long
     static final int SUMMARY_EVERY_S = 120, MILESTONE_M = 500, HR_FIRST = 100, HR_STEP = 20, HR_LAST = 220, HR_REARM = 5, LOCK_S = 25;
     static final long TTL_EVENT_MS = 30_000, TTL_HR_MS = 20_000, TTL_SUMMARY_MS = 40_000, TTL_DIST_MS = 60_000;
 
@@ -31,6 +41,8 @@ final class RunVoice {
     private int nextSummary = SUMMARY_EVERY_S, lastKm = 0;
     private int runStreak = 0, nonRun = 0, stillStreak = 0, moveStreak = 0, pausedFor = 0, noGpsFor = 0, lockStreak = 0;
     private int pauseStartSec = -1, lastEventTl = -1, lastEventArrival = -1;
+    private int strapStill = 0, strapWalk = 0, strapLastRun = -1;
+    boolean strapLive = false; double strapCadNow = Double.NaN;
     private final boolean[] armed;
     private final int[] thresholds;
     /** per second: {sec, gpsDist, stepsDist, 1 if RUN} */
@@ -72,6 +84,17 @@ final class RunVoice {
             steps += b[1] - a[1]; dur += dt;
         }
         return dur > 0 ? steps * 60.0 / dur : Double.NaN;
+    }
+
+    /** steps/min of the strap over the last `w` s from the per-second series [sec, cumulative steps]; NaN if the series is stale or too short */
+    static double strapCad(List<int[]> st, int sec, int w) {
+        if (st == null || st.isEmpty()) return Double.NaN;
+        int n = st.size(); int[] last = st.get(n - 1);
+        if (sec - last[0] > STRAP_LIVE_S) return Double.NaN;
+        int t1 = last[0], s1 = last[1], t0 = -1, s0 = 0;
+        for (int i = n - 1; i >= 0; i--) { int[] p = st.get(i); if (p[0] <= t1 - w) { t0 = p[0]; s0 = p[1]; break; } }
+        if (t0 < 0 || t1 - t0 > w + 3) return Double.NaN;
+        return (s1 - s0) * 60.0 / (t1 - t0);
     }
 
     static boolean isRunning(double cad, double spd) {
@@ -162,9 +185,19 @@ final class RunVoice {
      * @param gpsOk the GPS track is good enough to be the distance source
      */
     void tick(int sec, long nowMs, List<int[]> ss, List<int[]> hr, double gpsDist, boolean gpsOk, double gpsSpeed, int steps, double stride, boolean hasStrap) {
+        tick(sec, nowMs, ss, hr, gpsDist, gpsOk, gpsSpeed, steps, stride, hasStrap, null);
+    }
+
+    /** @param strap the H10's real-time steps, one point per second [sec, cumulative steps]; null / stale = no strap steps */
+    void tick(int sec, long nowMs, List<int[]> ss, List<int[]> hr, double gpsDist, boolean gpsOk, double gpsSpeed, int steps, double stride, boolean hasStrap, List<int[]> strap) {
         if (!cfg.enabled) return;
+        double sc3 = strapCad(strap, sec, 3), sc4 = strapCad(strap, sec, 4), sc8 = strapCad(strap, sec, 8);
+        strapLive = !Double.isNaN(sc4);
+        strapCadNow = strapLive ? strapCad(strap, sec, 30) : Double.NaN;
         double[] last = hist.isEmpty() ? null : hist.get(hist.size() - 1);
-        boolean mv = Double.isNaN(gpsSpeed) ? state == S.RUN : (state == S.RUN || state == S.PAUSE) && gpsSpeed >= 0.8;   // seconds of actual motion inside the run
+        // seconds of actual running inside the run (the live pace is distance over these seconds only)
+        boolean mv = strapLive ? state == S.RUN && sc4 >= STRAP_WALK_CAD
+            : Double.isNaN(gpsSpeed) ? state == S.RUN : state == S.RUN && gpsSpeed >= 0.8;
         double[] h = { sec, gpsDist, steps * stride, mv ? 1 : 0 };
         if (last != null && last[0] >= sec) hist.set(hist.size() - 1, h); else hist.add(h);
         spdHist.add(gpsSpeed);
@@ -180,12 +213,21 @@ final class RunVoice {
         boolean runLike = isRunning(cad20, spd10);
         double hrv = hasStrap ? hrAvg(hr, sec, 5, 3) : Double.NaN;
         hrNow = Double.isNaN(hrv) ? 0 : (int) Math.round(hrv);
+        if (strapLive && !Double.isNaN(strapCadNow)) cad30 = strapCadNow;   // the strap counts every step, the phone batches them
         cadNow = Double.isNaN(cad30) ? 0 : (int) Math.round(cad30);
+        if (strapLive) {
+            strapStill = sc3 < STRAP_STILL_CAD ? strapStill + 1 : 0;
+            strapWalk = sc8 < STRAP_WALK_CAD ? strapWalk + 1 : 0;
+            if (sc4 >= STRAP_RUN_CAD) strapLastRun = sec;
+            // the strap decides; GPS only vetoes running in place (≥ 10 s of GPS standstill)
+            boolean inPlace = !Double.isNaN(spd10) && spd10 < 0.5;
+            runLike = sc8 >= STRAP_RUN_CAD && !inPlace;
+        } else { strapStill = 0; strapWalk = 0; }
 
         switch (state) {
             case IDLE: case WALK:
                 runStreak = runLike ? runStreak + 1 : 0;
-                if (runStreak >= START_STREAK_S) {
+                if (runStreak >= (state == S.WALK && strapLive ? STRAP_WALK_RESUME_S : START_STREAK_S)) {
                     if (state == S.IDLE) {
                         state = S.RUN; runStartSec = Math.max(0, sec - START_STREAK_S); runClock = Math.min(sec, START_STREAK_S);
                         runStartGps = distAt(runStartSec, 1); runStartSteps = distAt(runStartSec, 2);
@@ -198,7 +240,7 @@ final class RunVoice {
                         state = S.RUN;
                         if (cfg.events) q.offer(RunPhrases.resumed(), VoiceQueue.EVENT, "resume", nowMs, TTL_EVENT_MS);
                     }
-                    nonRun = 0; stillStreak = 0; lastRunLikeSec = sec; runStreak = 0;
+                    nonRun = 0; stillStreak = 0; lastRunLikeSec = sec; runStreak = 0; strapStill = 0; strapWalk = 0;
                 }
                 break;
             case RUN: {
@@ -207,11 +249,20 @@ final class RunVoice {
                 boolean gpsStill = !Double.isNaN(spd5) && spd5 < 0.8;
                 boolean stepStill = noGpsFor >= 10 && nEv >= 2 && sec - lastEventArrival >= PAUSE_NOGPS_STALE_S && sec - tl >= 12;
                 stillStreak = gpsStill ? stillStreak + 1 : 0;
-                if (stillStreak >= PAUSE_STILL_S || stepStill) {
+                boolean pause;
+                if (strapLive) pause = strapStill >= STRAP_STILL_S || strapWalk >= STRAP_WALK_S;
+                else {
+                    // the last phone step batch (≈ every 10 s) still said «running»: GPS alone waits a bit longer before it pauses
+                    boolean phoneRan = nEv >= 2 && sec - lastEventArrival <= 11 && lastPairCad(ss) >= 120;
+                    pause = (stillStreak >= PAUSE_STILL_S && (!phoneRan || stillStreak >= GPS_PAUSE_MAX_WAIT_S)) || stepStill;
+                }
+                if (pause) {
                     state = S.PAUSE; pauses++; pauseStartSec = sec;
                     // the phrase is queued at detection time (it cannot be earlier); the stored span starts at the real stop
                     int fallback = Math.max(0, sec - PAUSE_STILL_S - PAUSE_SPD_WIN);
-                    spanStart = stepStill && stillStreak < PAUSE_STILL_S ? tl : truePauseStart(spdHist, sec, fallback);
+                    spanStart = strapLive ? Math.max(runStartSec, Math.min(sec, strapLastRun >= 0 ? strapLastRun + 1 : fallback))
+                        : stepStill && stillStreak < PAUSE_STILL_S ? tl : truePauseStart(spdHist, sec, fallback);
+                    strapStill = 0; strapWalk = 0;
                     pausedFor = 0; moveStreak = 0; stillStreak = 0;
                     if (cfg.events) q.offer(RunPhrases.paused(), VoiceQueue.EVENT, "pause", nowMs, TTL_EVENT_MS);
                 } else if (nonRun >= WALK_AFTER_S) { state = S.WALK; runStreak = 0; }
@@ -219,12 +270,15 @@ final class RunVoice {
             }
             case PAUSE: {
                 pausedFor++; pausedTotal++;
-                boolean moving = !Double.isNaN(spd3) ? spd3 >= 2.0
-                    : (noGpsFor >= 3 && lastEventArrival > pauseStartSec && !Double.isNaN(cad20) && cad20 >= 100);
+                boolean moving, phoneRuns = lastEventArrival > pauseStartSec && lastPairCad(ss) >= 125;
+                int need;
+                if (strapLive) { moving = sc3 >= STRAP_RUN_CAD; need = STRAP_RESUME_S; }
+                else if (!Double.isNaN(spd3)) { moving = spd3 >= GPS_RESUME_SPEED || (phoneRuns && spd3 >= 1.0); need = 3; }
+                else { moving = noGpsFor >= 3 && lastEventArrival > pauseStartSec && !Double.isNaN(cad20) && cad20 >= 100; need = 1; }
                 moveStreak = moving ? moveStreak + 1 : 0;
-                if (moveStreak >= (Double.isNaN(spd3) ? 1 : 3)) {
+                if (moveStreak >= need) {
                     pauseSpans.add(new int[] { spanStart, sec - moveStreak }); if (pauseSpans.size() > 20) pauseSpans.remove(0);
-                    state = S.RUN; nonRun = 0; stillStreak = 0; lastRunLikeSec = sec;
+                    state = S.RUN; nonRun = 0; stillStreak = 0; lastRunLikeSec = sec; strapStill = 0; strapWalk = 0;
                     if (cfg.events) q.offer(RunPhrases.resumed(), VoiceQueue.EVENT, "resume", nowMs, TTL_EVENT_MS);
                 } else if (pausedFor >= PAUSE_WALK_S) { state = S.WALK; runStreak = 0; }
                 break;
@@ -272,7 +326,7 @@ final class RunVoice {
             nextSummary = (runClock / SUMMARY_EVERY_S + 1) * SUMMARY_EVERY_S;
             if (cfg.summary) {
                 double hr30 = hasStrap && !locked ? hrAvg(hr, sec, 30, 15) : Double.NaN;
-                double c = liveCad(ss, sec, 40, pauseSpans);
+                double c = strapLive ? strapCad(strap, sec, 20) : liveCad(ss, sec, 40, pauseSpans);
                 int pace = paceOver(sec, 90, useGps);
                 paceNow = pace;
                 String t = RunPhrases.summary(Double.isNaN(hr30) ? 0 : (int) Math.round(hr30), Double.isNaN(c) || c < 60 ? 0 : (int) Math.round(c), pace);
@@ -281,11 +335,29 @@ final class RunVoice {
         }
     }
 
-    /** pace over the last `win` s counting only running seconds (a stop inside the window is not slow running); 0 = unknown */
+    /** steps/min of the last pair of phone step events (one MIUI batch ≈ 10 s); 0 when unknown */
+    static double lastPairCad(List<int[]> ss) {
+        int n = ss == null ? 0 : ss.size();
+        if (n < 2) return 0;
+        int[] b = ss.get(n - 1), a = ss.get(n - 2);
+        int dt = b[0] - a[0];
+        return dt > 0 && dt <= 15 ? (b[1] - a[1]) * 60.0 / dt : 0;
+    }
+
+    /**
+     * pace over the last `win` s: distance covered in the running seconds only, divided by those seconds (a stop or a not yet
+     * recognised restart inside the window neither slows it down nor speeds it up); 0 = unknown
+     */
     private int paceOver(int sec, int win, boolean useGps) {
         int idx = useGps ? 1 : 2;
-        double d = distAt(sec, idx) - distAt(sec - win, idx), moving = 0;
-        for (double[] p : hist) if (p[0] > sec - win && p[0] <= sec && p[3] > 0) moving++;
+        double d = 0, moving = 0;
+        double[] prev = null;
+        for (double[] p : hist) {
+            if (p[0] <= sec - win - 1) { prev = p; continue; }
+            if (p[0] > sec) break;
+            if (prev != null && p[3] > 0 && p[0] - prev[0] <= 3) { d += Math.max(0, p[idx] - prev[idx]); moving += p[0] - prev[0]; }
+            prev = p;
+        }
         if (d < 60 || moving < 45) return 0;
         int p = (int) Math.round(moving / (d / 1000.0));
         return p >= 150 && p <= 1200 ? p : 0;

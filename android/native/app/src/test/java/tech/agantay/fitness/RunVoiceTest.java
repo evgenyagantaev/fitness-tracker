@@ -65,7 +65,9 @@ public class RunVoiceTest {
         final VoiceQueue q = new VoiceQueue(); final RunVoice.Cfg cfg = new RunVoice.Cfg(); RunVoice rv;
         final List<Object[]> said = new ArrayList<>();   // {startSec, endSec, text}
         final List<int[]> ss = new ArrayList<>(), hr = new ArrayList<>();
-        boolean strap = true, gps = true; IntToDoubleFunction hrAt = t -> 120; double speakCharsPerSec = 14;
+        boolean strap = true, gps = true, acc = false; IntToDoubleFunction hrAt = t -> 120; double speakCharsPerSec = 14;
+        IntToDoubleFunction gpsDip = null;   // overrides the Doppler speed where it returns ≥ 0
+        final List<int[]> accSteps = new ArrayList<>();
         Seg[] segs; double steps = 0, dist = 0;
         VoiceQueue.Item speaking; long speakEnd;
         Sim(Seg... s) { segs = s; rv = new RunVoice(cfg, q); }
@@ -83,7 +85,9 @@ public class RunVoiceTest {
                 hr.add(new int[] { t, (int) hrAt.applyAsDouble(t) });
                 double spd = gps ? Math.max(0, s.spd + 0.15 * Math.sin(t * 1.7)) : Double.NaN;
                 if (gps && s.spd == 0) spd = 0.1;
-                rv.tick(t, now, visible, strap ? hr : new ArrayList<>(), dist, gps, spd, (int) Math.round(steps), 0.9, strap);
+                if (gps && gpsDip != null && gpsDip.applyAsDouble(t) >= 0) spd = gpsDip.applyAsDouble(t);
+                if (acc) accSteps.add(new int[] { t, (int) Math.floor(steps) });
+                rv.tick(t, now, visible, strap ? hr : new ArrayList<>(), dist, gps, spd, (int) Math.round(steps), 0.9, strap, acc ? accSteps : null);
                 if (speaking != null && now >= speakEnd) { q.done(now); speaking = null; }
                 if (speaking == null) {
                     VoiceQueue.Item it = q.next(now);
@@ -136,6 +140,50 @@ public class RunVoiceTest {
         for (Object[] o : s.said) assertTrue("no talk in the cooldown: " + o[2], (Integer) o[0] < 935);
     }
     static String firstDistance(Sim s) { for (String x : s.texts()) if (x.startsWith("Дистанция")) return x; return null; }
+
+    // v1.13: a slow run (cadence 138, 1.9 m/s ≈ 8:46 min/km) with a 20 s stop at 300–320 and a GPS dip to 0.4 m/s at 500–510 while running on
+    static Seg[] slowRun() { return new Seg[] { new Seg(0, 300, 138, 1.9), new Seg(300, 320, 0, 0), new Seg(320, 800, 138, 1.9) }; }
+    static double dip(int t) { return t >= 500 && t < 510 ? 0.4 : -1; }
+    static int paceSec(String x) {   // "Текущий темп восемь минут сорок секунд" → 520
+        String[] m = { "пять", "шесть", "семь", "восемь", "девять", "десять" };
+        for (int i = 0; i < m.length; i++) if (x.contains("Текущий темп " + m[i] + " минут")) return (5 + i) * 60;
+        return -1;
+    }
+
+    @Test public void slowRunWithTheStrapAccelerometer() {
+        Sim s = new Sim(slowRun()); s.acc = true; s.gpsDip = RunVoiceTest::dip; s.run(800);
+        System.out.println("---- slow run, H10 steps ----"); for (Object[] o : s.said) System.out.println(String.format("%4d s  %s", (Integer) o[0], o[2]));
+        s.check();
+        int p = s.when("Регистрация бега приостановлена"), r = s.when("Регистрация бега возобновлена");
+        assertTrue("stop heard within 6 s: " + p, p >= 301 && p <= 306);
+        assertTrue("restart heard within 4 s: " + r, r >= 321 && r <= 324);
+        assertEquals("no false pause on the GPS dip", 1, s.count("Регистрация бега приостановлена"));
+        int[][] sp = s.rv.pauseSpans();
+        assertEquals(1, sp.length);
+        assertTrue("span = the real stop: " + sp[0][0] + "–" + sp[0][1], Math.abs(sp[0][0] - 300) <= 2 && Math.abs(sp[0][1] - 320) <= 2);
+        int n = 0;
+        for (String x : s.texts()) if (x.startsWith("Текущий пульс")) { n++; assertEquals("pace ≈ 8:46 (over the running seconds only): " + x, 8 * 60, paceSec(x)); assertTrue(x, x.contains("каденс сто тридцать")); }
+        assertTrue(n >= 4);
+    }
+
+    @Test public void slowRunWithoutTheStrapAccelerometer() {
+        Sim s = new Sim(slowRun()); s.gpsDip = t -> t >= 500 && t < 508 ? 0.4 : -1; s.run(800);
+        System.out.println("---- slow run, phone steps + GPS ----"); for (Object[] o : s.said) System.out.println(String.format("%4d s  %s", (Integer) o[0], o[2]));
+        s.check();
+        int p = s.when("Регистрация бега приостановлена"), r = s.when("Регистрация бега возобновлена");
+        assertTrue("stop heard: " + p, p >= 303 && p <= 316);
+        assertTrue("1.9 m/s is running again within a few seconds: " + r, r >= 321 && r <= 327);
+        assertEquals("the phone's steps veto a short GPS dip", 1, s.count("Регистрация бега приостановлена"));
+        for (String x : s.texts()) if (x.startsWith("Текущий пульс")) assertEquals(x, 8 * 60, paceSec(x));
+    }
+
+    @Test public void strapCadenceFromTheSeries() {
+        List<int[]> st = new ArrayList<>();
+        for (int t = 0; t <= 20; t++) st.add(new int[] { t, (int) (t * 2.3) });
+        assertEquals(138, RunVoice.strapCad(st, 20, 10), 3);
+        assertTrue("stale series = unknown", Double.isNaN(RunVoice.strapCad(st, 30, 4)));
+        assertTrue(Double.isNaN(RunVoice.strapCad(null, 5, 4)));
+    }
 
     @Test public void distanceIsOfTheRunNotOfTheApproach() {
         Sim s = new Sim(dogRun()); s.run(500);

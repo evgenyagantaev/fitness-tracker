@@ -79,6 +79,8 @@ public class WorkoutService extends Service implements SensorEventListener {
     String hrStatus = "none";   // none | connecting | connected | disconnected | error:<msg>
     // step series: [sec since start, cumulative steps] (≤1 point/s) — used for cadence, stops, 100-step segments
     final ArrayList<int[]> stepSeries = new ArrayList<>();
+    /** H10 accelerometer real-time steps, one point per second [sec, cumulative] — live pause/resume of the run voice (not stored) */
+    final ArrayList<int[]> strapSeries = new ArrayList<>(); long accDataAt = 0;
     // GPS track: [sec, lat, lon, accuracy m]
     final ArrayList<double[]> track = new ArrayList<>();
     boolean useGps = true;
@@ -149,7 +151,7 @@ public class WorkoutService extends Service implements SensorEventListener {
                     phase = "pre"; workoutActive = false; workoutEnd = 0; workoutId = null; lastHrAt = now;
                     deviceId = intent.getStringExtra("deviceId"); deviceName = intent.getStringExtra("deviceName");
                     bpm = 0; bpmAt = 0; hrStatus = "none";
-                    samples.clear(); stepSeries.clear(); track.clear(); steps = 0; gpsDist = 0;
+                    samples.clear(); stepSeries.clear(); strapSeries.clear(); track.clear(); steps = 0; gpsDist = 0;
                 } else if (intent.getStringExtra("deviceId") != null && !intent.getStringExtra("deviceId").equals(deviceId)) {
                     newDevice = intent.getStringExtra("deviceId"); newName = intent.getStringExtra("deviceName");
                 }
@@ -186,7 +188,7 @@ public class WorkoutService extends Service implements SensorEventListener {
         samples.clear(); stepsBefore = 0; steps = 0;
         // anchor at «Старт»: steps made before the counter's next (batched) event still count
         stepBase = stepTotal >= 0 ? stepTotal : -1;
-        stepSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; gpsSpeedAt = 0; recent.clear();
+        stepSeries.clear(); strapSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; gpsSpeedAt = 0; recent.clear();
         workoutActive = true; phase = "workout"; workoutEnd = 0;
         startVoice(true);
         if (scaleScan != null) scaleScan.stop();
@@ -401,7 +403,14 @@ public class WorkoutService extends Service implements SensorEventListener {
                 int sec = (int) ((now - startedAt) / 1000);
                 boolean gpsOk = "ok".equals(gpsStatus) && gpsDist > 50;
                 double spd = gpsSpeedAt > 0 && now - gpsSpeedAt <= 3000 ? gpsSpeed : Double.NaN;
-                rv.tick(sec, SystemClock.elapsedRealtime(), stepSeries, samples, gpsDist, gpsOk, spd, steps, stride, deviceId != null);
+                AccRecorder a = acc;
+                if (a != null && !a.test && "h10".equals(a.source) && "recording".equals(accStatus) && now - accDataAt <= 3000) {
+                    int n = strapSeries.size();
+                    if (n > 0 && strapSeries.get(n - 1)[0] >= sec) strapSeries.get(n - 1)[1] = a.steps;
+                    else strapSeries.add(new int[] { sec, a.steps });
+                    while (strapSeries.size() > 90) strapSeries.remove(0);
+                }
+                rv.tick(sec, SystemClock.elapsedRealtime(), stepSeries, samples, gpsDist, gpsOk, spd, steps, stride, deviceId != null, strapSeries);
             }
         }
         if (rv != null) VoiceSpeaker.get(this).pump();
@@ -573,7 +582,8 @@ public class WorkoutService extends Service implements SensorEventListener {
         if (n > 0 && track.get(n - 1)[0] >= sec) return;
         track.add(new double[] { sec, lat, lon, Math.round(acc * 10) / 10.0 });
         gpsAcc = acc; gpsAt = System.currentTimeMillis();
-        gpsSpeed = l.hasSpeed() ? l.getSpeed() : 0; if (l.hasSpeed() && acc <= 30) gpsSpeedAt = System.currentTimeMillis();
+        // only a fix that carries a Doppler speed and is accurate enough updates it (a fix without speed used to inject 0 → false pause)
+        if (l.hasSpeed() && acc <= 30) { gpsSpeed = l.getSpeed(); gpsSpeedAt = System.currentTimeMillis(); }
         gpsStatus = acc <= 25 ? "ok" : "searching";
         if (acc > 25) return;
         // smooth jitter: mean of the last 3 good fixes (same idea as analysis.js)
@@ -791,6 +801,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             if (accFramesSeen <= 2 || accFramesSeen % 1000 == 0) Log.i(TAG, "ACC data #" + accFramesSeen + ": " + hex(v));
             if (acc == null) return;
             int n = acc.onFrame(v, System.currentTimeMillis());
+            if (n > 0) accDataAt = System.currentTimeMillis();
             if (n > 0 && "starting".equals(accStatus)) {
                 accStatus = "recording"; handler.removeCallbacks(accWatch);
                 Log.i(TAG, "ACC first data " + (System.currentTimeMillis() - accRequestedAt) + " ms after start (retries " + accRetries + ")");
