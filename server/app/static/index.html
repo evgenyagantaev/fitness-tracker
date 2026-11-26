@@ -32,6 +32,7 @@
       <button data-tab="today" class="active">Сегодня</button>
       <button data-tab="workout">Тренировка</button>
       <button data-tab="recovery">Восстановление</button>
+      <button data-tab="weight">Вес</button>
       <button data-tab="stats">Статистика</button>
       <button data-tab="settings">Настройки</button>
     </nav>
@@ -249,6 +250,31 @@
       </div>
     </section>
 
+    <section id="tab-weight" class="tab hidden">
+      <div class="wide">
+        <div class="panel native-only">
+          <h3>Взвешивание <span class="muted small">(Mi Body Composition Scale 2)</span></h3>
+          <div id="scaleLive" class="scale-live"><div class="small muted">Нажми «Взвеситься» и встань на весы босиком. Телефон держи рядом, Bluetooth включён.</div></div>
+          <button id="scaleWeigh" class="btn primary big">Взвеситься</button>
+          <div id="scaleMsg" class="small muted"></div>
+          <label class="check-line"><input type="checkbox" id="scalePassive" checked> <span>Ловить взвешивания и в фоне, пока идёт мониторинг пульса (не во время тренировки)</span></label>
+          <div id="scalePending" class="small muted"></div>
+        </div>
+        <div id="scaleOffline" class="board hidden">Нет связи с сервером.</div>
+        <div id="scaleProfileHint" class="panel hidden"><b>Заполни профиль</b> в «Настройках»: рост, год рождения и пол. Без них считаются только вес и ИМТ (для ИМТ нужен рост).</div>
+        <div id="scaleEmpty" class="panel hidden">Взвешиваний пока нет.</div>
+        <div id="scaleData" class="hidden">
+          <div class="panel"><h3>Вес и состав тела</h3><div id="scaleCards"></div></div>
+          <div class="panel">
+            <h3>Динамика</h3>
+            <div class="chart-box dyn-chart"><canvas id="scaleChart"></canvas></div>
+            <p class="small muted">Жир, мышцы и вода — оценка по сопротивлению тела (весы меряют от стопы до стопы). Смотри на тренд, а не на абсолютные цифры; взвешивайся в одно время, утром натощак, босиком и сухими ногами.</p>
+          </div>
+          <div class="panel"><h3>Все взвешивания</h3><div id="scaleTable"></div></div>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-stats" class="tab hidden">
       <div class="wide">
         <div id="statsOffline" class="board hidden">Статистика доступна, когда есть связь с сервером.</div>
@@ -338,6 +364,16 @@
           <p class="small muted">Женский голос с эффектом рации (Silero xenia, без интернета); голос телефона используется только как запасной. Между регулярными сообщениями не меньше 20 секунд; фраза никогда не обрывается на полуслове.</p>
         </div>
         <div class="panel">
+          <h3>Профиль <span class="muted small">(для состава тела по весам)</span></h3>
+          <div class="row3">
+            <label class="field">Рост, см<input id="profHeight" type="number" min="100" max="230" step="0.5" placeholder="например 178"></label>
+            <label class="field">Год или дата рождения<input id="profBirth" type="text" placeholder="1980 или 1980-05-17"></label>
+            <label class="field">Пол<select id="profSex"><option value="">—</option><option value="m">мужской</option><option value="f">женский</option></select></label>
+          </div>
+          <button id="profSave" class="btn primary">Сохранить</button>
+          <div id="profMsg" class="small muted"></div>
+        </div>
+        <div class="panel">
           <h3>Длина шага и калибровка по GPS</h3>
           <label class="field">Длина шага
             <select id="strideMode">
@@ -383,6 +419,7 @@
   <script src="ecg.js"></script>
   <script src="dynamics.js"></script>
   <script src="workout.js"></script>
+  <script src="scale.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

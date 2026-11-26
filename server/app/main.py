@@ -5,6 +5,7 @@ import base64
 import os
 import re
 import secrets
+import datetime as _dt
 from datetime import date as Date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -18,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 import hashlib
 import json
 
-from . import dynamics, phone_motion, stats
+from . import body, dynamics, phone_motion, stats
 from .db import Database
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -264,6 +265,54 @@ class SyncRequest(BaseModel):
     since: int = Field(default=0, ge=0, description="last server rev the client has seen")
     records: list[DayRecord] = Field(default=[], max_length=5000)
     workouts: list[Workout] = Field(default=[], max_length=500)
+
+
+
+WEIGH_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+BIRTH_RE = re.compile(r"^\d{4}(-\d{2}-\d{2})?$")
+
+
+class Profile(BaseModel):
+    """For body composition: height, birth year or date, sex. Empty = not filled in yet."""
+    height_cm: float | None = Field(default=None, ge=100, le=230)
+    birth: str | None = None
+    sex: Literal["m", "f"] | None = None
+
+    @field_validator("birth")
+    @classmethod
+    def _v_birth(cls, v: str | None) -> str | None:
+        if v in (None, ""):
+            return None
+        if not BIRTH_RE.match(v):
+            raise ValueError("birth: YYYY or YYYY-MM-DD")
+        y = int(v[:4])
+        if not 1900 <= y <= Date.today().year:
+            raise ValueError("birth year out of range")
+        if len(v) == 10:
+            Date.fromisoformat(v)
+        return v
+
+
+class Weighing(BaseModel):
+    id: str
+    t: int = Field(ge=1_500_000_000_000, le=4_000_000_000_000)
+    weight_kg: float = Field(ge=5, le=250)
+    impedance: int | None = Field(default=None, ge=0, le=5000)
+    source: str = Field(default="mi-scale-2", max_length=40)
+    scale_time: str | None = Field(default=None, max_length=32)
+    unit: str | None = Field(default=None, max_length=8)
+    device: str | None = Field(default=None, max_length=40)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if not WEIGH_ID_RE.match(v):
+            raise ValueError("bad weighing id")
+        return v
+
+
+class WeighingBatch(BaseModel):
+    items: list[Weighing] = Field(max_length=500)
 
 
 def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
@@ -605,6 +654,37 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
                          "steps": sum(w.get("steps", 0) for w in ws),
                          "moving_s": round(sum(w.get("moving_s") or w.get("duration_s", 0) for w in ws))}
         return t
+
+    # ---- v1.9: smart scale --------------------------------------------------------
+    def _with_comp(w: dict, prof: dict) -> dict:
+        when = _dt.datetime.fromtimestamp(w["t"] / 1000, ZoneInfo(os.environ.get("FITNESS_TZ", "Europe/Moscow"))).date()
+        return {**w, "comp": body.compose(w["weight_kg"], w.get("impedance"), prof, when)}
+
+    @app.get("/api/profile", dependencies=A)
+    def get_profile():
+        return {**db.get_profile(), "complete": body.profile_ok(db.get_profile())}
+
+    @app.put("/api/profile", dependencies=A)
+    def put_profile(p: Profile):
+        d = p.model_dump()
+        db.put_profile(d)
+        return {**d, "complete": body.profile_ok(d)}
+
+    @app.post("/api/weighings", dependencies=A)
+    def post_weighings(body_: WeighingBatch):
+        return db.add_weighings([w.model_dump() for w in body_.items])
+
+    @app.get("/api/weighings", dependencies=A)
+    def list_weighings():
+        prof = db.get_profile()
+        return {"profile": {**prof, "complete": body.profile_ok(prof)},
+                "items": [_with_comp(w, prof) for w in db.list_weighings()]}
+
+    @app.delete("/api/weighings/{wid}", dependencies=A)
+    def delete_weighing(wid: str):
+        if not db.delete_weighing(wid):
+            raise HTTPException(404, "not found")
+        return {"ok": True}
 
     if STATIC_DIR.is_dir():
         build = web_build(STATIC_DIR)

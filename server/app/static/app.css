@@ -172,3 +172,9 @@ select { background: #222; color: #eee; border: 1px solid #444; border-radius: 6
 .web-build { font-size: 11px; color: #666; text-align: center; padding: 10px 8px 14px; letter-spacing: 0.02em; }
 
 .seg-debug { margin: 8px 0 0; padding: 8px 10px; background: #101214; border: 1px solid #333; border-radius: 6px; color: #b9e2b9; font: 11px/1.35 monospace; max-height: 220px; overflow: auto; white-space: pre-wrap; }
+
+/* v1.9 scale */
+.scale-live { margin: 8px 0; min-height: 64px; }
+.scale-num { font-size: 44px; font-weight: bold; color: #bbb; }
+.scale-num.final { color: #39d353; }
+.small-btn { padding: 2px 8px; margin: 0; font-size: 12px; }

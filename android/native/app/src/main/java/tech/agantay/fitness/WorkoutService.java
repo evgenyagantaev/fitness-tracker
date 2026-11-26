@@ -189,6 +189,7 @@ public class WorkoutService extends Service implements SensorEventListener {
         stepSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; gpsSpeedAt = 0; recent.clear();
         workoutActive = true; phase = "workout"; workoutEnd = 0;
         startVoice(true);
+        if (scaleScan != null) scaleScan.stop();
         handler.post(() -> startAcc(false, 0));
     }
 
@@ -352,6 +353,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             }
             if (tickCount % 10 == 0) saveState();
             if (tickCount % 600 == 0) readBattery();
+            if (tickCount % 5 == 1) syncScaleScan();
             if (tickCount % 5 == 0) { AccRecorder r = acc; if (r != null) r.flush(); }
             if (tickCount % 30 == 0) checkForgottenStop();
             voiceTick();
@@ -1314,9 +1316,26 @@ public class WorkoutService extends Service implements SensorEventListener {
         return a;
     }
 
+    // ---------------- v1.9: smart scale (passive, only outside a workout) ----------------
+    static final String SCALE_PREFS = "scale";
+    private ScaleScanner scaleScan;
+    static boolean scalePassiveOn(Context c) { return c.getSharedPreferences(SCALE_PREFS, Context.MODE_PRIVATE).getBoolean("passive", true); }
+    static void setScalePassive(Context c, boolean on) { c.getSharedPreferences(SCALE_PREFS, Context.MODE_PRIVATE).edit().putBoolean("passive", on).apply(); }
+    /** the scale is heard while the monitor runs before / after a run; never during the workout itself */
+    void syncScaleScan() {
+        try {
+            boolean want = running && !workoutActive && scalePassiveOn(this);
+            if (want) {
+                if (scaleScan == null) scaleScan = new ScaleScanner(this, true);
+                if (!scaleScan.isOn()) scaleScan.start();
+            } else if (scaleScan != null && scaleScan.isOn()) scaleScan.stop();
+        } catch (Exception e) { Log.w(TAG, "scale scan", e); }
+    }
+
     @Override
     public void onDestroy() {
         running = false;
+        if (scaleScan != null) scaleScan.stop();
         { AccRecorder r = acc; if (r != null) r.flush(); }
         handler.removeCallbacksAndMessages(null);
         if (sm != null) sm.unregisterListener(this);

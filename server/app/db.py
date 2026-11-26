@@ -71,6 +71,18 @@ CREATE TABLE IF NOT EXISTS strap_battery (
     data TEXT NOT NULL,
     PRIMARY KEY (t, device)
 );
+-- v1.9: smart-scale weighings (Xiaomi Mi Body Composition Scale 2); composition is computed on read
+CREATE TABLE IF NOT EXISTS weighings (
+    id TEXT PRIMARY KEY,             -- client key: scale timestamp + raw weight (the scale repeats the same frame)
+    t INTEGER NOT NULL,              -- ms, phone clock when received
+    weight_kg REAL NOT NULL,
+    impedance INTEGER,               -- Ω, NULL if the scale sent none (shoes, too short)
+    source TEXT NOT NULL,
+    data TEXT NOT NULL,              -- JSON: raw fields from the phone
+    deleted INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS weighings_t ON weighings(t);
 """
 
 
@@ -337,6 +349,56 @@ class Database:
         with self._lock:
             rows = self._conn.execute("SELECT data FROM strap_battery ORDER BY t").fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    # ---- profile & weighings (v1.9) -------------------------------------------
+    def get_profile(self) -> dict[str, Any]:
+        with self._lock:
+            r = self._conn.execute("SELECT value FROM meta WHERE key='profile'").fetchone()
+        return json.loads(r[0]) if r else {}
+
+    def put_profile(self, p: dict[str, Any]) -> dict[str, Any]:
+        with self.tx() as c:
+            c.execute("INSERT OR REPLACE INTO meta VALUES ('profile', ?)", (json.dumps(p, ensure_ascii=False),))
+        return p
+
+    @staticmethod
+    def _wg_row(r: sqlite3.Row) -> dict[str, Any]:
+        d = json.loads(r["data"])
+        d.update({"id": r["id"], "t": r["t"], "weight_kg": r["weight_kg"], "impedance": r["impedance"],
+                  "source": r["source"], "deleted": bool(r["deleted"]), "updated_at": r["updated_at"]})
+        return d
+
+    def add_weighings(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        """Insert new weighings; a repeat of a known one only fills in a missing impedance. Deleted stay deleted."""
+        import time as _t
+        added = updated = 0
+        now = int(_t.time() * 1000)
+        with self.tx() as c:
+            for w in items:
+                cur = c.execute("SELECT impedance, deleted FROM weighings WHERE id=?", (w["id"],)).fetchone()
+                imp = int(w["impedance"]) if w.get("impedance") else None
+                if cur is None:
+                    c.execute("INSERT INTO weighings (id,t,weight_kg,impedance,source,data,deleted,updated_at) VALUES (?,?,?,?,?,?,0,?)",
+                              (w["id"], int(w["t"]), float(w["weight_kg"]), imp, str(w.get("source") or "mi-scale-2"),
+                               json.dumps({k: v for k, v in w.items() if k not in ("id", "t", "weight_kg", "impedance", "source")},
+                                          ensure_ascii=False), now))
+                    added += 1
+                elif cur["impedance"] is None and imp:
+                    c.execute("UPDATE weighings SET impedance=?, updated_at=? WHERE id=?", (imp, now, w["id"]))
+                    updated += 1
+        return {"added": added, "updated": updated}
+
+    def list_weighings(self, include_deleted: bool = False) -> list[dict[str, Any]]:
+        q = "SELECT * FROM weighings" + ("" if include_deleted else " WHERE deleted=0") + " ORDER BY t"
+        with self._lock:
+            rows = self._conn.execute(q).fetchall()
+        return [self._wg_row(r) for r in rows]
+
+    def delete_weighing(self, wid: str) -> bool:
+        import time as _t
+        with self.tx() as c:
+            cur = c.execute("UPDATE weighings SET deleted=1, updated_at=? WHERE id=?", (int(_t.time() * 1000), wid))
+            return cur.rowcount > 0
 
     def workouts_since(self, rev: int) -> list[dict[str, Any]]:
         with self._lock:

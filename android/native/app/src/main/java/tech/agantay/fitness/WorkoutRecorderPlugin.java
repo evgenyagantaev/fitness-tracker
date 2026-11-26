@@ -278,6 +278,60 @@ public class WorkoutRecorderPlugin extends Plugin {
         call.resolve(r);
     }
 
+    // ---- v1.9 smart scale (Xiaomi Mi Body Composition Scale 2) ----
+    private ScaleScanner liveScale;
+    private final android.os.Handler scaleHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable scaleTimeout = this::stopLiveScale;
+
+    /** live scan for the «Взвеситься» screen; refused while a workout is being recorded. Stops itself after 3 min. */
+    @PluginMethod
+    public void scaleStart(PluginCall call) {
+        WorkoutService s = WorkoutService.instance;
+        if (s != null && s.workoutActive) { call.reject("Идёт запись тренировки", "recording"); return; }
+        if (liveScale == null) {
+            liveScale = new ScaleScanner(getContext(), false);
+            liveScale.setListener((r, dev, saved) -> {
+                JSObject o = new JSObject();
+                o.put("weight_kg", r.weightKg); o.put("impedance", r.impedance); o.put("stable", r.stable);
+                o.put("removed", r.removed); o.put("final", r.isFinal()); o.put("saved", saved); o.put("unit", r.unit);
+                o.put("id", r.key()); o.put("scale_time", r.scaleTime());
+                notifyListeners("scale", o);
+            });
+        }
+        String err = liveScale.start();
+        if (err != null) { call.reject(err, err); return; }
+        scaleHandler.removeCallbacks(scaleTimeout);
+        scaleHandler.postDelayed(scaleTimeout, 180_000);
+        call.resolve();
+    }
+
+    private void stopLiveScale() {
+        scaleHandler.removeCallbacks(scaleTimeout);
+        if (liveScale != null) liveScale.stop();
+        notifyListeners("scaleStopped", new JSObject());
+    }
+
+    @PluginMethod
+    public void scaleStop(PluginCall call) { stopLiveScale(); call.resolve(); }
+
+    @PluginMethod
+    public void takeScaleReadings(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("readings", ScaleStore.take(getContext()));
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void scaleConfig(PluginCall call) {
+        if (call.getData().has("passive")) WorkoutService.setScalePassive(getContext(), call.getBoolean("passive", true));
+        WorkoutService s = WorkoutService.instance;
+        if (s != null) s.syncScaleScan();
+        JSObject r = new JSObject();
+        r.put("passive", WorkoutService.scalePassiveOn(getContext()));
+        r.put("permitted", ScaleScanner.permitted(getContext()));
+        call.resolve(r);
+    }
+
     @PluginMethod
     public void takeEcgRecords(PluginCall call) {
         JSObject r = new JSObject();

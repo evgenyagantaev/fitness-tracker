@@ -88,6 +88,8 @@
     if (t === 'settings' && window.FTWorkout) window.FTWorkout.refreshCalibration(true);
     if (t === 'workout') { window.FTWorkout.onShow(); Sync.schedule(0); }
     if (t === 'settings') renderSettings();
+    if (t === 'weight' && window.FTScale) window.FTScale.onShow();
+    if (t === 'settings' && window.FTScale) window.FTScale.loadProfile();
   }
 
   // ---------- login (web) ----------
