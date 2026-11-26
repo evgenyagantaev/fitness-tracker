@@ -59,4 +59,32 @@ final class PushupCounter {
     boolean isNearNow() { return near; }
     /** seconds from the first to the last counted rep (0 for one rep) */
     double activeSeconds() { return reps < 2 ? 0 : (lastRepMs - firstRepMs) / 1000.0; }
+
+    /** write the counter into a live-session object (wall-clock stamps so it survives a process death) */
+    org.json.JSONObject putSnapshot(org.json.JSONObject o, long nowWall, long nowMono) throws org.json.JSONException {
+        o.put("reps", reps).put("near", near);
+        if (lastRepMs >= 0) o.put("lastRepWall", nowWall - Math.max(0, nowMono - lastRepMs));
+        if (firstRepMs >= 0) o.put("firstRepWall", nowWall - Math.max(0, nowMono - firstRepMs));
+        org.json.JSONArray ages = new org.json.JSONArray();
+        for (long t : repTimes) ages.put(nowWall - Math.max(0, nowMono - t));
+        o.put("repWalls", ages);
+        return o;
+    }
+
+    /** rebuild from {@link #putSnapshot}; elapsed-realtime stamps are shifted to `nowMono` from wall-clock ages */
+    static PushupCounter fromSnapshot(org.json.JSONObject o, long nowWall, long nowMono) {
+        PushupCounter c = new PushupCounter(o != null && o.optBoolean("near"), nowMono);
+        if (o == null) return c;
+        org.json.JSONArray walls = o.optJSONArray("repWalls");
+        if (walls == null || walls.length() == 0) return c;
+        for (int i = 0; i < walls.length(); i++) {
+            long wall = walls.optLong(i);
+            long t = nowMono - Math.max(0, nowWall - wall);
+            c.repTimes.add(t);
+        }
+        c.reps = c.repTimes.size();
+        c.firstRepMs = c.repTimes.get(0);
+        c.lastRepMs = c.repTimes.get(c.reps - 1);
+        return c;
+    }
 }

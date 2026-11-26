@@ -106,4 +106,37 @@ public class PushupCounterTest {
         assertEquals("двадцать один.", VoiceClips.inventory().get("cnt.21")[1].toLowerCase());
         assertEquals("cnt.15", VoiceClips.resolve("пятнадцать.").get(0));
     }
+
+    @Test public void snapshotRoundTripKeepsRepsAndIdleAge() throws Exception {
+        PushupCounter c = new PushupCounter(false, 0);
+        assertTrue(rep(c, 10_000, 400));
+        assertTrue(rep(c, 12_000, 400));
+        assertTrue(rep(c, 14_000, 400));
+        assertEquals(3, c.reps());
+        long nowMono = 20_000, nowWall = 1_700_000_000_000L;
+        JSONObject live = c.putSnapshot(new JSONObject().put("id", "pu-1").put("startedAt", nowWall - 10_000), nowWall, nowMono);
+        assertEquals(3, live.getInt("reps"));
+        assertEquals(nowWall - (nowMono - 14_400), live.getLong("lastRepWall")); // last far edge at 14400
+        // same wall time, new elapsed clock (process death): last rep was 5600 ms ago
+        PushupCounter d = PushupCounter.fromSnapshot(live, nowWall, 1_000);
+        assertEquals(3, d.reps());
+        assertEquals(1_000 - 5_600, d.lastRepMs());
+        PushupCounter e = PushupCounter.fromSnapshot(live, nowWall + 6_000, 1_000);
+        assertEquals(1_000 - 11_600, e.lastRepMs());   // 6 s later still
+        assertEquals(3, new JSONArray(live.getJSONArray("repWalls").toString()).length());
+    }
+
+    @Test public void liveExpiresAfterTwoMinutesIdleAndNotBefore() throws Exception {
+        JSONObject live = new JSONObject().put("reps", 7).put("startedAt", 1000).put("lastRepWall", 50_000);
+        assertFalse(PushupLive.expired(live, 50_000 + 119_000));
+        assertTrue(PushupLive.expired(live, 50_000 + 120_001));
+        JSONObject empty = new JSONObject().put("reps", 0).put("startedAt", 1000);
+        assertFalse(PushupLive.expired(empty, 1000 + 299_000));
+        assertTrue(PushupLive.expired(empty, 1000 + 300_001));
+        assertFalse(PushupLive.expired(null, 999999));
+        JSONObject set = PushupLive.toSet(live, 50_000 + 130_000);
+        assertEquals(7, set.getInt("reps"));
+        assertEquals(1000, set.getLong("t"));
+        assertNull(PushupLive.toSet(empty, 400_000));
+    }
 }

@@ -42,12 +42,14 @@ try {
       rep: () => { reps += 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: false })); },
       setRecording: (v) => { recording = v; },
       unlock: () => { (L.pushupUnlocked || []).forEach((cb) => cb({})); },
+      resumed: (n) => { if (n != null) reps = n; (L.pushupResumed || []).forEach((cb) => cb({ reps, resumed: true })); },
+      finished: (set, reason) => { (L.pushupFinished || []).forEach((cb) => cb({ set, reason: reason || 'user' })); },
       calls: [],
     };
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { WorkoutRecorder: {
       async addListener(n, cb) { (L[n] = L[n] || []).push(cb); return { remove: async () => { L[n] = (L[n] || []).filter((x) => x !== cb); } }; },
       async setPushupGuard({ on }) { window.__push.calls.push(on ? 'guard-on' : 'guard-off'); },
-      async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: false, recording }; },
+      async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: !!window.__push.liveActive, paused: !!window.__push.livePaused, reps: window.__push.liveReps || 0, recording }; },
       async pushupStart() { window.__push.calls.push('start'); reps = 0; t0 = Date.now(); },
       async pushupUndo() { if (reps > 0) { reps -= 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: true })); } window.__push.calls.push('undo'); },
       async pushupFinish() { window.__push.calls.push('finish'); const set = reps ? { id: 'pu-' + t0 + '-' + (reps + 100), t: t0, reps, duration_s: reps * 1.4, armed_s: 30, source: 'proximity' } : null; if (set) pending.push(set); return { set }; },
@@ -79,6 +81,15 @@ try {
   ok((await ap.textContent('#pushHint')).includes('Закончить'), 'hint after unlock mentions Закончить');
   for (let i = 0; i < 21; i++) { await ap.evaluate(() => window.__push.rep()); }
   ok((await ap.textContent('#pushCount')) === '21', 'counter shows 21');
+  // v1.14: Recents / Home must not close the set; coming back re-locks and keeps the count
+  await ap.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '21', 'going to the background does not close the set');
+  await ap.evaluate(() => window.__push.unlock());
+  ok(!(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked'))), 'unlocked before leaving');
+  await ap.evaluate(() => window.__push.resumed(21));
+  ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'return from Recents re-locks the screen');
+  ok((await ap.textContent('#pushCount')) === '21', 'count kept after return');
+  await ap.evaluate(() => window.__push.unlock());
   await ap.evaluate(() => { document.querySelector('#pushUndo'); });
   // hold-to-undo: a short tap does nothing, a hold drops a rep
   const ub = await ap.locator('#pushUndo').boundingBox();
@@ -119,6 +130,13 @@ try {
   await ap.click('#pushStart');
   ok(!(await ap.isVisible('#pushOverlay')) && /запись тренировки/.test(await ap.textContent('#pushMsg')), 'refused while a workout is recorded');
   await ap.evaluate(() => window.__push.setRecording(false));
+  // activity was killed mid-set: on the next start the same set is still open
+  await ap.evaluate(() => { window.__push.liveActive = true; window.__push.liveReps = 7; });
+  ok(await ap.evaluate(() => FTPush._rejoin()), 'rejoin after a cold start');
+  ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '7', 'restored set shows the saved count');
+  ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'restored set is locked');
+  await ap.evaluate(() => { window.__push.liveActive = false; window.__push.finished(null, 'empty'); });
+  await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'));
   await ap.click('.tabs button[data-tab=push]');
   await ap.waitForTimeout(600);
   await ap.screenshot({ path: shotPath('push-app-tab.png'), fullPage: true });

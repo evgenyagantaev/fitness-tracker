@@ -48,6 +48,7 @@ public class WorkoutRecorderPlugin extends Plugin {
                 }
             });
         } catch (Exception ignored) {}
+        recoverPushup();
     }
 
     /** v1.12: lock or release the full-screen touch guard for a push-up set. */
@@ -376,6 +377,7 @@ public class WorkoutRecorderPlugin extends Plugin {
         JSObject r = new JSObject();
         r.put("present", p.present()); r.put("maxRange", p.maxRange()); r.put("sensor", p.sensorName());
         r.put("binary", p.maxRange() <= 5.5f); r.put("voice", p.voiceClips()); r.put("active", p.active());
+        r.put("paused", p.paused()); r.put("reps", p.reps());
         WorkoutService s = WorkoutService.instance;
         r.put("recording", s != null && s.workoutActive);
         call.resolve(r);
@@ -418,18 +420,53 @@ public class WorkoutRecorderPlugin extends Plugin {
         call.resolve(r);
     }
 
-    /** the proximity sensor is silent with the screen off / the app in the background: close the set, keep the reps */
+    /**
+     * v1.14: the proximity sensor is silent in the background (Recents, Home, screen off). Pause the set — do not
+     * finish it. The 2-minute idle close still runs; coming back in handleOnResume continues the same set.
+     */
     @Override
     protected void handleOnPause() {
         super.handleOnPause();
-        if (pushups != null && pushups.active()) {
-            JSONObject set = pushups.finish();
+        if (pushups != null && pushups.active() && !pushups.paused()) {
+            pushups.pause();
             keepScreenOn(false);
             applyPushupGuard(false);
-            JSObject o = new JSObject(); o.put("reason", "background");
-            if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
-            notifyListeners("pushupFinished", o, true);
+            JSObject o = new JSObject(); o.put("reps", pushups.reps()); o.put("paused", true);
+            notifyListeners("pushupPaused", o, true);
         }
+    }
+
+    @Override
+    protected void handleOnResume() {
+        super.handleOnResume();
+        recoverPushup();
+        if (pushups != null && pushups.paused()) {
+            String err = pushups.resume();
+            if (err != null) return;
+            keepScreenOn(true);
+            applyPushupGuard(true);
+            JSObject o = new JSObject(); o.put("reps", pushups.reps()); o.put("resumed", true);
+            notifyListeners("pushupResumed", o, true);
+        }
+    }
+
+    /** after a process / activity death: close an expired leftover, or bring a still-open set back as paused */
+    private void recoverPushup() {
+        try {
+            android.content.Context ctx = getContext();
+            if (ctx == null) return;
+            if (pushups != null && pushups.active()) return;
+            JSONObject closed = PushupLive.closeIfExpired(ctx, System.currentTimeMillis());
+            if (closed != null) {
+                JSObject o = new JSObject(); o.put("reason", "idle");
+                try { o.put("set", new JSObject(closed.toString())); } catch (Exception ignored) {}
+                notifyListeners("pushupFinished", o, true);
+                return;
+            }
+            JSONObject live = PushupLive.read(ctx);
+            if (live == null) return;
+            pushupSession().restore(live);
+        } catch (Exception ignored) {}
     }
 
     @PluginMethod

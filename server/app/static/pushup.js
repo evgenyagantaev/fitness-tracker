@@ -9,7 +9,7 @@
   const WR = isNative && P.WorkoutRecorder ? P.WorkoutRecorder : null;
   const K_PEND = 'ft.pushPending', K_APPLIED = 'ft.pushApplied', K_CACHE = 'ft.pushSets';
   const COUNTDOWN_S = 5;
-  let state = 'idle', locked = false, countdownTimer = null, listeners = [], sessionSets = [], data = null, chart = null;
+  let state = 'idle', locked = false, countdownTimer = null, nativeBound = false, sessionSets = [], data = null, chart = null;
 
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
   const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
@@ -86,9 +86,43 @@
     box.innerHTML = `<h4 class="sub">Эта серия: ${total} ${plural(total, 'раз', 'раза', 'раз')}, ${sessionSets.length} ${plural(sessionSets.length, 'подход', 'подхода', 'подходов')}</h4>` +
       sessionSets.map((s, i) => `<div class="push-set"><span>${i + 1}. ${hm(s.t)}</span><b>${s.reps}</b><span class="muted">${dur(s.duration_s)}</span></div>`).join('');
   }
+  function bindNative() {
+    if (nativeBound || !WR || !WR.addListener) return;
+    nativeBound = true;
+    WR.addListener('pushup', (e) => { if (state === 'armed') setCount(e.reps); }).catch(() => {});
+    WR.addListener('pushupFinished', (e) => finished(e.set, e.reason)).catch(() => {});
+    WR.addListener('pushupUnlocked', () => setLocked(false)).catch(() => {});
+    WR.addListener('pushupResumed', (e) => onResumed(e)).catch(() => {});
+    WR.addListener('pushupPaused', () => { /* keep the overlay and the count; the native side has only dropped the sensor */ }).catch(() => {});
+  }
+  function showArmed(n) {
+    state = 'armed';
+    overlay(true);
+    $('pushPhase').textContent = 'Считаю';
+    setCount(n || 0);
+    setLocked(true);
+    hint();
+    guard(true);
+  }
+  function onResumed(e) {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    showArmed(e && e.reps ? e.reps : 0);
+  }
+  /** after Recents / Home / a killed activity: pick the open set back up (no new countdown) */
+  async function rejoin() {
+    if (!WR || (state !== 'idle' && state !== 'countdown')) return false;
+    let info = null;
+    try { info = await WR.pushupInfo(); } catch (e) { return false; }
+    if (!info || !info.active || info.recording) return false;
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    showArmed(info.reps || 0);
+    return true;
+  }
   async function startSet() {
     if (!WR || state !== 'idle') return;
     $('pushMsg').textContent = '';
+    bindNative();
+    if (await rejoin()) return;
     let info = null;
     try { info = await WR.pushupInfo(); } catch (e) { /* ignore */ }
     if (info && info.recording) { $('pushMsg').textContent = 'Идёт запись тренировки: отжимания считать нельзя, пока она не закончится.'; return; }
@@ -98,7 +132,6 @@
     $('pushPhase').textContent = 'Ложись, телефон экраном вверх под грудь';
     setLocked(true);
     await guard(true);
-    listeners = [WR.addListener ? await WR.addListener('pushupUnlocked', () => setLocked(false)) : { remove: async () => {} }];
     let left = COUNTDOWN_S;
     setCount(left, true);
     countdownTimer = setInterval(() => {
@@ -110,8 +143,6 @@
   }
   async function armed() {
     try {
-      listeners.push(await WR.addListener('pushup', (e) => { setCount(e.reps); }),
-        await WR.addListener('pushupFinished', (e) => finished(e.set, e.reason)));
       await WR.pushupStart();
     } catch (e) {
       cleanup();
@@ -126,8 +157,6 @@
   }
   function cleanup() {
     if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-    listeners.forEach((l) => { try { l.remove(); } catch (e) { /* ignore */ } });
-    listeners = [];
     state = 'idle';
     setLocked(false);
     guard(false);
@@ -142,12 +171,13 @@
     finished(set, 'user');
   }
   function finished(set, reason) {
+    const wasOpen = state !== 'idle';
     cleanup();
     if (set) {
       applyToBoard(set); queue([set]);
-      sessionSets.push(set);
-      $('pushMsg').textContent = `Записан подход: ${set.reps} ${plural(set.reps, 'раз', 'раза', 'раз')}.` + (reason === 'idle' ? ' (закрыт сам: 2 минуты без отжиманий)' : reason === 'background' ? ' (приложение ушло в фон — датчик там не работает)' : '');
-    } else $('pushMsg').textContent = reason === 'empty' ? 'Отжиманий не было, подход не записан.' : 'Отжиманий не насчитано, подход не записан.';
+      if (!sessionSets.some((s) => s.id === set.id)) sessionSets.push(set);
+      $('pushMsg').textContent = `Записан подход: ${set.reps} ${plural(set.reps, 'раз', 'раза', 'раз')}.` + (reason === 'idle' ? ' (закрыт сам: 2 минуты без отжиманий)' : '');
+    } else if (wasOpen) $('pushMsg').textContent = reason === 'empty' ? 'Отжиманий не было, подход не записан.' : 'Отжиманий не насчитано, подход не записан.';
     renderSession();
     flush().then(refresh);
   }
@@ -220,9 +250,16 @@
     if ($('pushStart')) $('pushStart').addEventListener('click', startSet);
     if ($('pushFinish')) hold($('pushFinish'), 1200, finishSet);
     if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (!locked && state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) flush(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) return;
+      flush();
+      if (state === 'armed' || state === 'countdown') { setLocked(true); guard(true); }
+      else rejoin();
+    });
+    bindNative();
     setTimeout(flush, 5000);
+    setTimeout(rejoin, 400);
   }
   init();
-  window.FTPush = { refresh, onShow: () => { refresh(); }, flush, _applyToBoard: applyToBoard, _removeFromBoard: removeFromBoard };
+  window.FTPush = { refresh, onShow: () => { refresh(); rejoin(); }, flush, _applyToBoard: applyToBoard, _removeFromBoard: removeFromBoard, _rejoin: rejoin };
 })();

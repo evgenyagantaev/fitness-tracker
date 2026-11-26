@@ -18,6 +18,9 @@ import java.util.Random;
  * v1.10: one push-up set. Listens to the proximity sensor (only works with the screen on and the app in front), counts reps with
  * PushupCounter, says every number with RepVoice. finish() stores the set in PushupStore (so it is not lost if the web part is not
  * running) and returns it. Never used while a workout is recorded (the plugin refuses).
+ * v1.14: leaving to Recents / Home / screen off pauses the set (the sensor is silent in the background) instead of finishing it.
+ * The count is kept in memory and in {@link PushupLive}; coming back re-registers the sensor and continues. The 2-minute idle
+ * close still runs while paused, and after a process death the snapshot is closed on the next start if it has expired.
  */
 final class PushupSession implements SensorEventListener {
     static final String TAG = "PushupSession";
@@ -33,8 +36,9 @@ final class PushupSession implements SensorEventListener {
     private PushupCounter counter;
     private Listener listener;
     private long startedAt, armedMono;
+    private String setId;
     private float maxRange = 5f;
-    private boolean active = false;
+    private boolean active = false, paused = false;
 
     PushupSession(Context ctx) {
         this.ctx = ctx.getApplicationContext();
@@ -46,6 +50,7 @@ final class PushupSession implements SensorEventListener {
     void setListener(Listener l) { listener = l; }
     boolean present() { return prox != null; }
     boolean active() { return active; }
+    boolean paused() { return active && paused; }
     int reps() { return counter == null ? 0 : counter.reps(); }
     float maxRange() { return prox != null ? prox.getMaximumRange() : 0f; }
     String sensorName() { return prox != null ? prox.getName() : null; }
@@ -60,9 +65,12 @@ final class PushupSession implements SensorEventListener {
         firstEvent = true;
         startedAt = System.currentTimeMillis();
         armedMono = android.os.SystemClock.elapsedRealtime();
+        setId = String.format(Locale.ROOT, "pu-%d-%03d", startedAt, new Random().nextInt(1000));
+        paused = false;
         voice.start();
         if (!sm.registerListener(this, prox, SensorManager.SENSOR_DELAY_FASTEST, h)) { voice.stop(); return "error"; }
         active = true;
+        persist();
         Log.i(TAG, "start: sensor=" + prox.getName() + " maxRange=" + maxRange + " clips=" + voice.hasClips());
         h.postDelayed(idleCheck, 5_000);
         return null;
@@ -79,6 +87,7 @@ final class PushupSession implements SensorEventListener {
             int n = counter.reps();
             Log.i(TAG, "rep " + n);
             voice.say(n);
+            persist();
             if (listener != null) listener.onRep(n, false);
         }
     }
@@ -88,6 +97,7 @@ final class PushupSession implements SensorEventListener {
         if (!active || counter == null || !counter.undo()) return;
         int n = counter.reps();
         if (n > 0) voice.say(n);
+        persist();
         if (listener != null) listener.onRep(n, true);
     }
 
@@ -109,20 +119,78 @@ final class PushupSession implements SensorEventListener {
     };
     // sensor event timestamps are on the elapsed-realtime clock (ns since boot), so counter times compare with SystemClock.elapsedRealtime()
 
+    /** drop the sensor and the speaker, keep the count; the idle timer keeps running */
+    synchronized void pause() {
+        if (!active || paused) return;
+        paused = true;
+        try { sm.unregisterListener(this); } catch (Exception ignored) {}
+        voice.stop();
+        persist();
+        Log.i(TAG, "paused at " + reps() + " reps");
+    }
+
+    /** @return null if counting resumed, else an error code */
+    synchronized String resume() {
+        if (!active) return "idle";
+        if (!paused) return null;
+        if (prox == null) return "no-sensor";
+        firstEvent = true;   // the first reading after a gap only syncs near/far, it does not count a rep
+        voice.start();
+        if (!sm.registerListener(this, prox, SensorManager.SENSOR_DELAY_FASTEST, h)) { voice.stop(); return "error"; }
+        paused = false;
+        int n = reps();
+        if (n > 0) voice.say(n);
+        Log.i(TAG, "resumed at " + n + " reps");
+        return null;
+    }
+
+    /** rebuild a paused set from a {@link PushupLive} snapshot; starts the idle timer, does not touch the sensor */
+    synchronized void restore(JSONObject live) {
+        if (live == null) return;
+        if (active) finishLocked();
+        long nowWall = System.currentTimeMillis();
+        long nowMono = android.os.SystemClock.elapsedRealtime();
+        startedAt = live.optLong("startedAt", nowWall);
+        setId = live.optString("id", String.format(Locale.ROOT, "pu-%d-%03d", startedAt, new Random().nextInt(1000)));
+        long armedAgo = Math.max(0, nowWall - startedAt);
+        armedMono = nowMono - armedAgo;
+        counter = PushupCounter.fromSnapshot(live, nowWall, nowMono);
+        firstEvent = true;
+        paused = true;
+        active = true;
+        maxRange = prox != null ? prox.getMaximumRange() : 5f;
+        Log.i(TAG, "restored " + reps() + " reps, paused, id=" + setId);
+        h.removeCallbacks(idleCheck);
+        h.postDelayed(idleCheck, 1_000);
+    }
+
+    private void persist() {
+        if (!active || counter == null) return;
+        try {
+            long nowWall = System.currentTimeMillis();
+            long nowMono = android.os.SystemClock.elapsedRealtime();
+            JSONObject o = new JSONObject().put("id", setId == null ? "" : setId).put("startedAt", startedAt);
+            counter.putSnapshot(o, nowWall, nowMono);
+            PushupLive.write(ctx, o);
+        } catch (Exception ignored) {}
+    }
+
     /** stop counting; the set (null if no reps) is stored for the web part */
     synchronized JSONObject finish() { return active ? finishLocked() : null; }
 
     private JSONObject finishLocked() {
         active = false;
+        paused = false;
         h.removeCallbacks(idleCheck);
         try { sm.unregisterListener(this); } catch (Exception ignored) {}
         voice.stop();
-        int n = counter.reps();
+        PushupLive.clear(ctx);
+        int n = counter == null ? 0 : counter.reps();
         if (n < 1) return null;
         try {
             double armed = (android.os.SystemClock.elapsedRealtime() - armedMono) / 1000.0;
             JSONObject o = new JSONObject()
-                .put("id", String.format(Locale.ROOT, "pu-%d-%03d", startedAt, new Random().nextInt(1000)))
+                .put("id", setId != null ? setId : String.format(Locale.ROOT, "pu-%d-%03d", startedAt, new Random().nextInt(1000)))
                 .put("t", startedAt).put("reps", n)
                 .put("duration_s", Math.round(counter.activeSeconds() * 10) / 10.0)
                 .put("armed_s", Math.round(armed * 10) / 10.0).put("source", "proximity");
