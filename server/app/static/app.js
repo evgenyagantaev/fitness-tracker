@@ -10,7 +10,11 @@
 
   if (isNative) document.body.classList.add('native');
 
-  // ---------- today checklist ----------
+  // ---------- today board (v1.11: free cells, no norm) ----------
+  // Pull-ups / push-ups: every filled cell is one set with its own reps, a new empty cell appears below.
+  // Run / walk: one cell with km (filled by hand or by a recorded workout). The day's result is the sum.
+  const fmtKm = (k) => String(Math.round(k * 100) / 100).replace('.', ',');
+  const setWord = (n) => { const x = n % 100, y = n % 10; return x >= 11 && x <= 14 ? 'подходов' : y === 1 ? 'подход' : y >= 2 && y <= 4 ? 'подхода' : 'подходов'; };
   function renderToday() {
     currentDate = localDate();
     const d = new Date();
@@ -21,40 +25,59 @@
     for (const e of Store.exercises()) {
       const g = document.createElement('div');
       g.className = 'ex-group';
+      g.dataset.ex = e.id;
       if (e.kind === 'sets') {
-        rec.sets[e.id].done.forEach((checked, i) => {
-          const id = `${e.id}${i + 1}`;
-          const cs = rec.sets[e.id].counted && rec.sets[e.id].counted[i];   // counted by the phone: the real reps
-          g.insertAdjacentHTML('beforeend', `<div class="checkbox-container"><input type="checkbox" id="${id}" ${checked ? 'checked' : ''}><label for="${id}">${esc(e.name)} ${cs ? cs.reps + ' 📲' : rec.sets[e.id].reps}</label></div>`);
-          g.lastElementChild.querySelector('input').addEventListener('change', (ev) => {
-            const r = Store.view(currentDate); r.sets[e.id].done[i] = ev.target.checked; commit(r);
+        const cells = rec.sets[e.id] ? rec.sets[e.id].cells : [];
+        const total = cells.reduce((a, c) => a + c.reps, 0);
+        g.insertAdjacentHTML('beforeend', `<div class="ex-title"><span>${esc(e.name)}</span><span class="muted">${cells.length ? `${total} · ${cells.length} ${setWord(cells.length)}` : ''}</span></div>`);
+        cells.forEach((c, i) => {
+          g.insertAdjacentHTML('beforeend', `<div class="cell filled" data-i="${i}"><span class="cell-n">${i + 1}</span><input type="number" class="reps" min="0" max="10000" inputmode="numeric" value="${c.reps}"><span class="cell-u">${esc(e.unit || 'раз')}${c.src === 'auto' ? ' 📲' : ''}</span><button class="cell-x" title="Убрать">✕</button></div>`);
+          const row = g.lastElementChild, inp = row.querySelector('input.reps');
+          inp.addEventListener('change', () => {
+            const n = Math.round(parseFloat(String(inp.value).replace(',', '.')) || 0), x = Store.view(currentDate), arr = x.sets[e.id].cells;
+            if (n > 0) arr[i].reps = n; else arr.splice(i, 1);
+            commit(x); renderToday();
           });
+          row.querySelector('.cell-x').addEventListener('click', () => { const x = Store.view(currentDate); x.sets[e.id].cells.splice(i, 1); commit(x); renderToday(); });
         });
+        g.insertAdjacentHTML('beforeend', `<div class="cell empty"><span class="cell-n">${cells.length + 1}</span><input type="number" class="reps new" id="${e.id}New" min="1" max="10000" inputmode="numeric" placeholder="${esc(e.unit || 'раз')}"><button class="cell-ok" title="Записать подход">＋</button></div>`);
+        const inp = g.querySelector('input.new');
+        const add = () => {
+          const n = Math.round(parseFloat(String(inp.value).replace(',', '.')) || 0);
+          if (!(n > 0)) return;
+          inp.value = '';
+          if (Store.addCell(currentDate, e.id, n, { src: 'manual' })) { commit(Store.view(currentDate)); renderToday(); }
+        };
+        inp.addEventListener('change', add);
+        g.querySelector('.cell-ok').addEventListener('click', add);
       } else {
         const r = rec.distance[e.id];
-        const id = `${e.id}Check`;
-        g.insertAdjacentHTML('beforeend', `<div class="checkbox-container"><input type="checkbox" id="${id}" ${r.done ? 'checked' : ''}><label for="${id}">${esc(e.name)}</label><input type="number" id="${e.id}Km" min="0" step="0.1" inputmode="decimal" placeholder="${esc(e.unit || 'км')}" value="${r.km ? r.km : ''}"></div>`);
-        const cb = g.querySelector('input[type=checkbox]'), num = g.querySelector('input[type=number]');
-        cb.addEventListener('change', () => { const x = Store.view(currentDate); x.distance[e.id].done = cb.checked; commit(x); });
+        const id = `${e.id}Km`;
+        g.insertAdjacentHTML('beforeend', `<div class="cell ${r.km > 0 ? 'filled' : 'empty'}"><span class="cell-name">${esc(e.name)}</span><input type="number" class="km" id="${id}" min="0" step="0.1" inputmode="decimal" placeholder="${esc(e.unit || 'км')}" value="${r.km ? r.km : ''}"><span class="cell-u">${esc(e.unit || 'км')}</span></div>`);
+        const num = g.querySelector('input.km');
         num.addEventListener('change', () => {
           const x = Store.view(currentDate);
           const km = Math.max(0, parseFloat(String(num.value).replace(',', '.')) || 0);
           x.distance[e.id].km = Math.round(km * 100) / 100;
-          if (km > 0) { x.distance[e.id].done = true; cb.checked = true; }
-          commit(x);
+          x.distance[e.id].done = km > 0;
+          commit(x); renderSummary();
         });
       }
       box.appendChild(g);
     }
-    renderProgress();
+    renderSummary();
   }
 
-  function commit(rec) { Store.put(rec); renderProgress(); Reminders.reschedule(); }
+  function commit(rec) { Store.put(rec); renderSummary(); Reminders.reschedule(); }
 
-  function renderProgress() {
-    const p = Store.progress(currentDate);
-    $('progressBar').style.width = (p.total ? (100 * p.done / p.total) : 0) + '%';
-    $('progressLabel').textContent = p.complete ? 'всё выполнено 💪' : `${p.done} / ${p.total}`;
+  /** «Итого за день»: plain sums, nothing to reach. */
+  function renderSummary() {
+    const m = Store.summary(currentDate), parts = [];
+    for (const e of Store.exercises()) {
+      if (e.kind === 'sets') { const x = m.sets[e.id]; if (x && x.n) parts.push(`${esc(e.name.toLowerCase())} <b>${x.reps}</b> (${x.n} ${setWord(x.n)})`); }
+      else if (m.km[e.id] > 0) parts.push(`${esc(e.name.toLowerCase())} <b>${fmtKm(m.km[e.id])}</b> км`);
+    }
+    $('daySummary').innerHTML = parts.length ? 'Итого за день: ' + parts.join(' · ') : 'Пока пусто: заполни любую ячейку.';
   }
 
   $('resetButton').addEventListener('click', () => {
@@ -129,11 +152,11 @@
   $('syncNow').addEventListener('click', () => Sync.run());
 
   function renderExEditor(list) {
-    $('exEditor').innerHTML = '<div class="ex-head"><span>Название</span><span>Подходы</span><span>Повторы</span><span></span></div>' + list.map((e) => `
+    $('exEditor').innerHTML = '<div class="ex-head"><span>Название</span><span title="Больше не используется">Подх.</span><span title="Больше не используется">Повт.</span><span></span></div>' + list.map((e) => `
       <div class="ex-row" data-id="${esc(e.id)}" data-kind="${e.kind}">
         <input type="text" class="n" value="${esc(e.name)}">
-        <input type="number" class="s" min="1" max="50" value="${e.sets}" ${e.kind === 'distance' ? 'disabled' : ''}>
-        <input type="number" class="r" min="0" value="${e.kind === 'distance' ? '' : e.reps}" placeholder="${e.kind === 'distance' ? 'км' : ''}" ${e.kind === 'distance' ? 'disabled' : ''}>
+        <input type="number" class="s" min="1" max="50" value="${e.sets}" disabled>
+        <input type="number" class="r" min="0" value="${e.kind === 'distance' ? '' : e.reps}" placeholder="${e.kind === 'distance' ? 'км' : ''}" disabled>
         <button class="del" title="Удалить">✕</button>
       </div>`).join('');
     $('exEditor').querySelectorAll('.del').forEach((b) => b.addEventListener('click', () => b.parentElement.remove()));

@@ -147,7 +147,7 @@ def test_daily_and_totals(client):
         rec("2026-11-20", pull=ALL, push=ALL, km=3, ts=1), rec("2026-11-21", pull={0}, ts=1)]})
     d = client.get("/api/stats/daily", params={"from": "2026-11-01"}).json()
     assert d[0]["complete"] is True and d[0]["completion"] == 1.0
-    assert d[1]["completion"] == round(1 / 11, 4) and d[1]["reps"]["pullups"] == 3
+    assert d[1]["completion"] == round(1 / 3, 4) and d[1]["reps"]["pullups"] == 3
     t = client.get("/api/stats/totals").json()
     assert t["reps"] == {"pullups": 18, "pushups": 75} and t["km"] == 3 and t["days_recorded"] == 2
 

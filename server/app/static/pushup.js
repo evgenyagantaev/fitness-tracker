@@ -24,25 +24,13 @@
     if (!pushExercise()) return;
     const applied = load(K_APPLIED, []);
     if (applied.includes(set.id)) return;
-    const r = Store.view(localDate(new Date(set.t)));
-    const s = r.sets.pushups; if (!s) return;
-    s.counted = s.counted || [];
-    while (s.counted.length < s.done.length) s.counted.push(null);
-    let i = s.done.findIndex((d, k) => !d && !s.counted[k]);
-    if (i < 0) { if (s.done.length >= 50) return; i = s.done.length; s.done.push(false); s.counted.push(null); }
-    s.done[i] = true; s.counted[i] = { id: set.id, reps: set.reps };
-    Store.put(r);
+    // v1.11: every counted set fills the next free cell; a new empty one appears below it
+    if (!Store.addCell(localDate(new Date(set.t)), 'pushups', set.reps, { id: set.id, src: 'auto' })) return;
     applied.push(set.id); save(K_APPLIED, applied.slice(-500));
   }
   function removeFromBoard(id, date) {
-    const ex = pushExercise(); if (!ex) return;
-    const r = Store.view(date), s = r.sets.pushups;
-    if (!s || !s.counted) return;
-    const i = s.counted.findIndex((c) => c && c.id === id);
-    if (i < 0) return;
-    s.counted[i] = null; s.done[i] = false;
-    while (s.done.length > ex.sets && !s.done[s.done.length - 1] && !s.counted[s.counted.length - 1]) { s.done.pop(); s.counted.pop(); }
-    Store.put(r);
+    if (!pushExercise()) return;
+    Store.removeCellById(date, 'pushups', id);
   }
 
   // ---------- phone → server ----------

@@ -96,10 +96,18 @@ class CountedSet(BaseModel):
     reps: int = Field(ge=0, le=1000)
 
 
+class Cell(BaseModel):
+    """v1.11 board: one filled cell (a set) with its own reps; `id` is the phone-counted set's id (src="auto")."""
+    reps: int = Field(ge=1, le=10000)
+    id: str | None = Field(default=None, max_length=64)
+    src: Literal["manual", "auto"] | None = None
+
+
 class SetsEntry(BaseModel):
-    reps: int = Field(ge=0, le=10000)
-    done: list[bool] = Field(max_length=50)
-    counted: list[CountedSet | None] | None = Field(default=None, max_length=50)   # aligned with `done`
+    reps: int = Field(default=0, ge=0, le=10000)           # legacy: planned reps of the old fixed sets
+    done: list[bool] = Field(default=[], max_length=50)     # legacy
+    counted: list[CountedSet | None] | None = Field(default=None, max_length=50)   # legacy (v1.10), aligned with `done`
+    cells: list[Cell] | None = Field(default=None, max_length=200)   # v1.11: filled cells only; wins over the legacy fields
 
 
 class DistanceEntry(BaseModel):

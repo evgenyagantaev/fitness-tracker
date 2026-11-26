@@ -39,7 +39,7 @@ await page.waitForSelector('#app:not(.hidden)');
 ok(await page.evaluate(() => document.body.classList.contains('native')), 'native mode detected, no login screen');
 await page.waitForFunction(() => document.querySelector('#syncStatus').textContent.includes('без сервера'));
 ok(true, 'works offline without server: "' + await page.textContent('#syncStatus') + '"');
-await page.click('label[for=pullups1]');
+await page.fill('#pullupsNew', '3'); await page.press('#pullupsNew', 'Enter');
 await page.waitForTimeout(1500);
 const n = await page.evaluate(() => window.__ln);
 ok(n.channel && n.channel.id === 'reminders', 'notification channel created');
@@ -58,7 +58,7 @@ await page.waitForFunction(() => JSON.parse(localStorage['ft.dirty'] || '[]').le
 ok(true, 'connected via CORS from http://localhost, history pulled from server');
 const today = new Date().toLocaleDateString('sv-SE');
 const srv = await fetch(SERVER + 'api/days/' + today, { headers: { Authorization: 'Bearer ' + TOKEN } }).then((r) => r.json());
-ok(srv.sets.pullups.done[0] === true, 'offline tick from the phone reached the server');
+ok(srv.sets.pullups.cells[0].reps === 3, 'offline cell from the phone reached the server');
 
 // change reminder settings: every 3h from 10 to 19
 await page.fill('#notifStart', '10'); await page.fill('#notifEnd', '19'); await page.fill('#notifEvery', '3');
@@ -69,12 +69,10 @@ await page.screenshot({ path: shot('screenshot-android-settings.png'), fullPage:
 
 // complete the whole day -> no reminders left for today
 await page.click('.tabs button[data-tab=today]');
-for (const id of ['pullups', 'pushups']) for (let i = 1; i <= 5; i++) if (!(await page.isChecked(`#${id}${i}`))) await page.click(`label[for=${id}${i}]`);
-if (!(await page.isChecked('#runCheck'))) await page.click('label[for=runCheck]');
-if ((await page.$('#walkCheck')) && !(await page.isChecked('#walkCheck'))) await page.click('label[for=walkCheck]');   // v1.5: «Ходьба» on the board
+await page.fill('#pushupsNew', '20'); await page.press('#pushupsNew', 'Enter');   // v1.11: no norm, any filled cell ends today's reminders
 await page.waitForTimeout(1500);
 const left = (await page.evaluate(() => window.__ln.scheduled)).filter((x) => new Date(x.schedule.at).toLocaleDateString('sv-SE') === today);
-ok(left.length === 0 && (await page.textContent('#progressLabel')).includes('всё выполнено'), 'day complete -> no more reminders today');
+ok(left.length === 0 && (await page.textContent('#daySummary')).includes('отжимания'), 'day has activity -> no more reminders today');
 await page.screenshot({ path: shot('screenshot-android-today.png') });
 await browser.close();
 console.log(process.exitCode ? 'NATIVE MOCK FAILED' : 'NATIVE MOCK PASSED');

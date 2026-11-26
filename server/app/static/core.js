@@ -25,6 +25,20 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
   }
 
+  /** Filled cells of a rep exercise (mirrors server stats.cells_of). Legacy done[]/counted[] are read, never rewritten. */
+  function cellsOf(e, plannedReps) {
+    if (!e) return [];
+    if (Array.isArray(e.cells)) return e.cells.filter((c) => c && c.reps > 0).map((c) => Object.assign({}, c));
+    const per = e.reps != null ? e.reps : (plannedReps || 0), out = [];
+    (e.done || []).forEach((d, i) => {
+      if (!d) return;
+      const c = e.counted && e.counted[i];
+      const reps = c ? c.reps : per;
+      if (reps > 0) out.push(c ? { reps, id: c.id, src: 'auto' } : { reps, src: 'manual' });
+    });
+    return out;
+  }
+
   const Store = {
     config() { return Object.assign({}, DEFAULT_CONFIG, load(K.config, {}), { notif: Object.assign({}, DEFAULT_CONFIG.notif, (load(K.config, {}) || {}).notif) }); },
     setConfig(patch) { save(K.config, Object.assign(this.config(), patch)); },
@@ -36,36 +50,53 @@
     rev() { return load(K.rev, 0); },
     lastSync() { return load(K.lastSync, null); },
 
-    /** Empty record shaped after the current exercise list. */
+    /** Empty record: no cells yet (the board shows one empty cell per rep exercise) and no distance. */
     blank(date) {
       const rec = { date, sets: {}, distance: {}, updated_at: 0 };
       for (const e of this.exercises()) {
-        if (e.kind === 'sets') rec.sets[e.id] = { reps: e.reps, done: Array(e.sets).fill(false) };
+        if (e.kind === 'sets') rec.sets[e.id] = { cells: [] };
         else rec.distance[e.id] = { done: false, km: 0 };
       }
       return rec;
     },
-    /** Record for a date merged with the current exercise list (new exercises appear unchecked). */
+    /**
+     * Record for a date in the v1.11 shape: sets[id] = { cells: [{reps, id?, src?}] } (filled cells only).
+     * Records saved by older versions (done[] + planned reps, counted[]) are converted on read; the stored
+     * history is not rewritten until that day is edited.
+     */
     view(date) {
       const base = this.blank(date), cur = this.day(date);
       if (!cur) return base;
-      for (const id in base.sets) {
-        const c = cur.sets && cur.sets[id];
-        if (c) {
-          // v1.10: sets counted by the phone (proximity sensor) can go beyond the planned number of sets
-          let n = base.sets[id].done.length;
-          (c.counted || []).forEach((x, i) => { if (x && i + 1 > n) n = i + 1; });
-          const done = Array.from({ length: n }, (_, i) => !!(c.done && c.done[i]));
-          base.sets[id] = { reps: c.reps, done };
-          if (c.counted && c.counted.some(Boolean)) base.sets[id].counted = Array.from({ length: n }, (_, i) => c.counted[i] || null);
-        }
-      }
-      for (const id in base.distance) if (cur.distance && cur.distance[id]) base.distance[id] = Object.assign({}, cur.distance[id]);
-      // keep data of exercises that were removed from the list
-      for (const id in (cur.sets || {})) if (!base.sets[id]) base.sets[id] = cur.sets[id];
-      for (const id in (cur.distance || {})) if (!base.distance[id]) base.distance[id] = cur.distance[id];
+      const cfg = {}; for (const e of this.exercises()) cfg[e.id] = e;
+      for (const id in (cur.sets || {})) base.sets[id] = { cells: cellsOf(cur.sets[id], cfg[id] ? cfg[id].reps : 0) };
+      for (const id in (cur.distance || {})) base.distance[id] = Object.assign({}, cur.distance[id]);
       base.updated_at = cur.updated_at;
       return base;
+    },
+    /** Append a filled cell (manual or auto). Returns false when the day is full. */
+    addCell(date, exId, reps, meta) {
+      reps = Math.round(reps);
+      if (!(reps >= 1)) return false;
+      const r = this.view(date), s = r.sets[exId] || (r.sets[exId] = { cells: [] });
+      if (s.cells.length >= 200) return false;
+      s.cells.push(Object.assign({ reps }, meta || {}));
+      this.put(r);
+      return true;
+    },
+    /** Remove the cell that carries a phone-counted set id. */
+    removeCellById(date, exId, setId) {
+      const r = this.view(date), s = r.sets[exId];
+      if (!s) return false;
+      const i = s.cells.findIndex((c) => c.id === setId);
+      if (i < 0) return false;
+      s.cells.splice(i, 1); this.put(r); return true;
+    },
+    /** The day's result: plain sums, no norm. */
+    summary(date) {
+      const v = this.view(date), out = { sets: {}, km: {}, active: false };
+      for (const id in v.sets) { const c = v.sets[id].cells; out.sets[id] = { n: c.length, reps: c.reduce((a, x) => a + x.reps, 0) }; if (c.length) out.active = true; }
+      for (const id in v.distance) { const d = v.distance[id]; out.km[id] = d.km || 0; if (d.km > 0 || d.done) out.active = true; }
+      return out;
     },
     put(rec) {
       const days = this.days();
@@ -111,14 +142,12 @@
       try { save(K.workouts, all); }
       catch (e) { for (const id in all) if (!dirty.has(id)) trim(all[id], true); save(K.workouts, all); }
     },
+    /** No daily norm any more: `done` = filled cells, `complete` = something was done today (stops the reminders). */
     progress(date) {
-      const v = this.view(date), ex = this.exercises();
-      let total = 0, done = 0;
-      for (const e of ex) {
-        if (e.kind === 'sets') { total += Math.max(e.sets, v.sets[e.id].done.length); done += v.sets[e.id].done.filter(Boolean).length; }
-        else { total += 1; const r = v.distance[e.id]; if (r.done || r.km > 0) done += 1; }
-      }
-      return { total, done, complete: total > 0 && done >= total };
+      const m = this.summary(date);
+      let done = Object.values(m.sets).reduce((a, x) => a + x.n, 0);
+      for (const id in m.km) if (m.km[id] > 0) done += 1;
+      return { total: done, done, complete: m.active };
     },
   };
 
@@ -231,5 +260,5 @@
     },
   };
 
-  window.FT = { Store, Sync, api, apiBase, localDate, isNative, DEFAULT_EXERCISES, DEFAULT_CONFIG };
+  window.FT = { cellsOf, Store, Sync, api, apiBase, localDate, isNative, DEFAULT_EXERCISES, DEFAULT_CONFIG };
 })();

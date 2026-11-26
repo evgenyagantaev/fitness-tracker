@@ -5,42 +5,57 @@ from datetime import date as Date, timedelta
 from typing import Any
 
 
+def cells_of(v: dict[str, Any], planned_reps: int = 0) -> list[dict[str, Any]]:
+    """Filled cells of a rep exercise on one day, in order.
+
+    v1.11 board: `cells` = [{reps, id?, src?}] holds only filled cells (no planned sets, no norm).
+    Older records (done[] + reps, optional counted[]) are read as-is, never rewritten: a ticked set
+    is a cell with the planned reps, a set counted by the phone keeps its real reps.
+    """
+    if v.get("cells") is not None:
+        return [c for c in v["cells"] if c and int(c.get("reps") or 0) > 0]
+    done = [bool(x) for x in (v.get("done") or [])]
+    counted = v.get("counted") or []
+    per = int(v.get("reps", planned_reps) or 0)
+    out: list[dict[str, Any]] = []
+    for i, d in enumerate(done):
+        if not d:
+            continue
+        c = counted[i] if i < len(counted) else None
+        reps = int(c["reps"]) if c else per
+        if reps > 0:
+            out.append({"reps": reps, **({"id": c["id"], "src": "auto"} if c else {})})
+    return out
+
+
 def day_metrics(rec: dict[str, Any], exercises: list[dict[str, Any]], since: dict[str, str] | None = None) -> dict[str, Any]:
-    """Per-day numbers: reps & sets per exercise, km, completion fraction."""
+    """Per-day numbers: total reps & number of sets per exercise, km. No daily norm: the day's result is the sum.
+
+    `completion` is only the share of the day's exercise kinds touched (pull-ups, push-ups, run, walk): 0.25 per kind.
+    """
     reps: dict[str, int] = {}
     sets_done: dict[str, int] = {}
     km: dict[str, float] = {}
-    total_items = 0
-    done_items = 0
     cfg = {e["id"]: e for e in exercises}
-    seen: set[str] = set()
+    touched: set[str] = set()
 
     for ex_id, v in (rec.get("sets") or {}).items():
-        done = [bool(x) for x in (v.get("done") or [])]
-        n = sum(done)
-        per = int(v.get("reps", cfg.get(ex_id, {}).get("reps", 0)))
-        counted = v.get("counted") or []
-        # v1.10: a set counted by the phone carries its real reps; the others are the board's planned reps
-        reps[ex_id] = sum(int(counted[i]["reps"]) if i < len(counted) and counted[i] else per for i, d in enumerate(done) if d)
-        sets_done[ex_id] = n
-        planned = max(len(done), int(cfg.get(ex_id, {}).get("sets", 0)) if ex_id in cfg else len(done))
-        total_items += planned
-        done_items += min(n, planned)
-        seen.add(ex_id)
+        cells = cells_of(v, int(cfg.get(ex_id, {}).get("reps", 0)))
+        reps[ex_id] = sum(int(c["reps"]) for c in cells)
+        sets_done[ex_id] = len(cells)
+        if cells:
+            touched.add(ex_id)
     for ex_id, v in (rec.get("distance") or {}).items():
         k = float(v.get("km") or 0)
-        is_done = bool(v.get("done")) or k > 0
         km[ex_id] = round(k, 3)
-        total_items += 1
-        done_items += 1 if is_done else 0
-        seen.add(ex_id)
-    # exercises configured but absent from the record count as not done
-    for e in exercises:
-        if e["id"] not in seen and not (since and since.get(e["id"], "") > rec["date"]):
-            total_items += int(e["sets"]) if e["kind"] == "sets" else 1
+        if bool(v.get("done")) or k > 0:
+            touched.add(ex_id)
 
-    active = done_items > 0
-    completion = (done_items / total_items) if total_items else 0.0
+    kinds = [e["id"] for e in exercises if not (since and since.get(e["id"], "") > rec["date"])]
+    total_items = len(kinds)
+    done_items = sum(1 for k in kinds if k in touched)
+    active = bool(touched)
+    completion = (done_items / total_items) if total_items else (1.0 if active else 0.0)
     return {
         "date": rec["date"],
         "reps": reps,

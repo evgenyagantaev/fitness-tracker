@@ -20,7 +20,7 @@ console.log('wrong token:', await p.textContent('#loginError'));
 await p.fill('#loginToken', TOKEN); await p.click('#loginBtn');
 await p.waitForSelector('#app:not(.hidden)');
 await p.waitForFunction(() => /Синхронизировано|Нет синхр/.test(document.querySelector('#syncStatus').textContent), null, { timeout: 15000 });
-console.log('status:', await p.textContent('#syncStatus'), '| boxes:', (await p.$$('#checklist input[type=checkbox]')).length);
+console.log('status:', await p.textContent('#syncStatus'), '| boxes:', (await p.$$('#checklist .cell')).length);
 await p.click('.tabs button[data-tab=stats]'); await p.waitForTimeout(2500);
 console.log('stats offline banner hidden:', await p.$eval('#statsOffline', (e) => e.classList.contains('hidden')));
 await p.screenshot({ path: shot('prod-login.png') });

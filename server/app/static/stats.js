@@ -43,7 +43,6 @@
     const items = [
       [s.current, 'серия сейчас, ' + dayWord(s.current)],
       [s.longest, 'лучшая серия, ' + dayWord(s.longest)],
-      [s.current_full, 'полных дней подряд'],
       [s.active_days, 'активных дней всего'],
       [(t.reps.pullups || 0).toLocaleString('ru-RU'), 'подтягиваний всего'],
       [(t.reps.pushups || 0).toLocaleString('ru-RU'), 'отжиманий всего'],

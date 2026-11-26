@@ -91,13 +91,13 @@ try {
   ok(items.length === 2 && items.map((x) => x.reps).sort().join() === '12,20', 'both sets reached the server: ' + items.map((x) => x.reps));
   const day = await req('GET', 'api/days/' + await ap.evaluate(() => FT.localDate()));
   const s = day.sets.pushups;
-  ok(s.done.slice(0, 2).every(Boolean) && s.counted[0].reps === 20 && s.counted[1].reps === 12, 'board: sets 1–2 ticked with real reps ' + JSON.stringify(s.counted));
+  ok(s.cells.length === 2 && s.cells[0].reps === 20 && s.cells[1].reps === 12 && s.cells[0].src === 'auto', 'board: two cells with real reps ' + JSON.stringify(s.cells));
   const todayM = (await req('GET', 'api/stats/daily')).find((d) => d.date === day.date);
   ok(todayM.reps.pushups === 32, 'day stats: 32 reps counted (' + todayM.reps.pushups + ')');
   // more sets than the board plans (5): the board grows
   for (let k = 0; k < 4; k++) await ap.evaluate((k) => FTPush._applyToBoard({ id: 'pu-extra-' + k, t: Date.now(), reps: 10 + k }), k);
-  const r2 = await ap.evaluate(() => { const v = FT.Store.view(FT.localDate()).sets.pushups; return [v.done.length, v.counted.filter(Boolean).length]; });
-  ok(r2[0] === 6 && r2[1] === 6, 'board grows beyond 5 planned sets: ' + r2);
+  const r2 = await ap.evaluate(() => FT.Store.view(FT.localDate()).sets.pushups.cells.length);
+  ok(r2 === 6, 'board has no fixed number of sets: ' + r2);
   // not while recording
   await ap.evaluate(() => window.__push.setRecording(true));
   await ap.click('#pushStart');
@@ -108,8 +108,9 @@ try {
   await ap.screenshot({ path: shotPath('push-app-tab.png'), fullPage: true });
   await ap.click('.tabs button[data-tab=today]'); await ap.waitForTimeout(400);
   await ap.screenshot({ path: shotPath('push-app-board.png'), fullPage: true });
-  const labels = await ap.$$eval('#checklist label', (l) => l.map((x) => x.textContent.trim()).filter((t) => t.startsWith('Отжимания')));
-  ok(labels[0].includes('20') && labels[1].includes('12'), 'board labels show real reps: ' + labels.join(' | '));
+  const vals = await ap.$$eval('#checklist [data-ex=pushups] .cell.filled input.reps', (l) => l.map((x) => x.value));
+  ok(vals[0] === '20' && vals[1] === '12' && vals.length === 6, 'board cells show real reps: ' + vals.join(','));
+  ok((await ap.$$('#checklist [data-ex=pushups] .cell.empty')).length === 1, 'one empty push-up cell below the filled ones');
 
   // ---- site (plain browser) ----
   const page = await (await browser.newContext({ viewport: { width: 1100, height: 1300 }, locale: 'ru-RU', timezoneId: 'Europe/Moscow' })).newPage();

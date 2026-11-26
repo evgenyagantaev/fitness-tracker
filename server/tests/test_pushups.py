@@ -34,7 +34,7 @@ def test_counted_reps_in_day_stats(client):
         "counted": [{"id": "pu-a", "reps": 22}, None, {"id": "pu-b", "reps": 9}, {"id": "pu-c", "reps": 31}, None]}}}
     m = stats.day_metrics(rec, ex)
     assert m["reps"]["pushups"] == 22 + 15 + 9 + 31 and m["sets"]["pushups"] == 4   # the plain tick keeps the planned 15
-    assert m["complete"] is False and m["completion"] == 0.8      # 4 of the 5 sets on the board
+    assert m["active"] and m["complete"] is True      # only one exercise kind is configured here, and it is touched
     # without `counted` nothing changes (old records)
     old = {"date": "2026-11-25", "distance": {}, "sets": {"pushups": {"reps": 15, "done": [True, True, False]}}}
     assert stats.day_metrics(old, ex)["reps"]["pushups"] == 30
