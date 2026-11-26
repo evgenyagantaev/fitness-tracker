@@ -24,7 +24,8 @@
       if (e.kind === 'sets') {
         rec.sets[e.id].done.forEach((checked, i) => {
           const id = `${e.id}${i + 1}`;
-          g.insertAdjacentHTML('beforeend', `<div class="checkbox-container"><input type="checkbox" id="${id}" ${checked ? 'checked' : ''}><label for="${id}">${esc(e.name)} ${rec.sets[e.id].reps}</label></div>`);
+          const cs = rec.sets[e.id].counted && rec.sets[e.id].counted[i];   // counted by the phone: the real reps
+          g.insertAdjacentHTML('beforeend', `<div class="checkbox-container"><input type="checkbox" id="${id}" ${checked ? 'checked' : ''}><label for="${id}">${esc(e.name)} ${cs ? cs.reps + ' 📲' : rec.sets[e.id].reps}</label></div>`);
           g.lastElementChild.querySelector('input').addEventListener('change', (ev) => {
             const r = Store.view(currentDate); r.sets[e.id].done[i] = ev.target.checked; commit(r);
           });
@@ -89,6 +90,7 @@
     if (t === 'workout') { window.FTWorkout.onShow(); Sync.schedule(0); }
     if (t === 'settings') renderSettings();
     if (t === 'weight' && window.FTScale) window.FTScale.onShow();
+    if (t === 'push' && window.FTPush) window.FTPush.onShow();
     if (t === 'settings' && window.FTScale) window.FTScale.loadProfile();
   }
 

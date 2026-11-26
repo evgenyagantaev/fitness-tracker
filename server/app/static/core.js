@@ -52,8 +52,12 @@
       for (const id in base.sets) {
         const c = cur.sets && cur.sets[id];
         if (c) {
-          const done = base.sets[id].done.map((_, i) => !!c.done[i]);
+          // v1.10: sets counted by the phone (proximity sensor) can go beyond the planned number of sets
+          let n = base.sets[id].done.length;
+          (c.counted || []).forEach((x, i) => { if (x && i + 1 > n) n = i + 1; });
+          const done = Array.from({ length: n }, (_, i) => !!(c.done && c.done[i]));
           base.sets[id] = { reps: c.reps, done };
+          if (c.counted && c.counted.some(Boolean)) base.sets[id].counted = Array.from({ length: n }, (_, i) => c.counted[i] || null);
         }
       }
       for (const id in base.distance) if (cur.distance && cur.distance[id]) base.distance[id] = Object.assign({}, cur.distance[id]);
@@ -111,7 +115,7 @@
       const v = this.view(date), ex = this.exercises();
       let total = 0, done = 0;
       for (const e of ex) {
-        if (e.kind === 'sets') { total += e.sets; done += v.sets[e.id].done.filter(Boolean).length; }
+        if (e.kind === 'sets') { total += Math.max(e.sets, v.sets[e.id].done.length); done += v.sets[e.id].done.filter(Boolean).length; }
         else { total += 1; const r = v.distance[e.id]; if (r.done || r.km > 0) done += 1; }
       }
       return { total, done, complete: total > 0 && done >= total };

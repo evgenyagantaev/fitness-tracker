@@ -33,6 +33,7 @@
       <button data-tab="workout">Тренировка</button>
       <button data-tab="recovery">Восстановление</button>
       <button data-tab="weight">Вес</button>
+      <button data-tab="push">Отжимания</button>
       <button data-tab="stats">Статистика</button>
       <button data-tab="settings">Настройки</button>
     </nav>
@@ -275,6 +276,38 @@
       </div>
     </section>
 
+    <section id="tab-push" class="tab hidden">
+      <div class="wide">
+        <div class="panel native-only" id="pushPanel">
+          <h3>Счётчик отжиманий <span class="muted small">(датчик приближения)</span></h3>
+          <p class="small muted">Положи телефон экраном вверх на пол под грудь. Опустился — датчик закрылся, поднялся — открылся: это одно отжимание, телефон называет число вслух. Подход заканчивается долгим нажатием на «Закончить», экран всё время включён.</p>
+          <button id="pushStart" class="btn primary big">Начать подход</button>
+          <div id="pushMsg" class="small muted"></div>
+          <div id="pushSession"></div>
+          <div id="pushPending" class="small muted"></div>
+        </div>
+        <div id="pushOffline" class="board hidden">Нет связи с сервером.</div>
+        <div id="pushEmpty" class="panel hidden">Подходов пока нет.</div>
+        <div id="pushData" class="hidden">
+          <div class="panel"><h3>Сегодня</h3><div id="pushCards"></div><div id="pushToday"></div></div>
+          <div class="panel">
+            <h3>Динамика <span class="muted small">(последние 30 дней)</span></h3>
+            <div class="chart-box dyn-chart"><canvas id="pushChart"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="pushOverlay" class="push-overlay hidden">
+      <div id="pushPhase" class="push-phase"></div>
+      <div id="pushCount" class="push-count">0</div>
+      <div id="pushHint" class="push-hint"></div>
+      <div class="push-btns">
+        <button id="pushUndo" class="btn hold" type="button"><span class="hold-fill"></span><span class="hold-txt">−1 (держи)</span></button>
+        <button id="pushFinish" class="btn primary hold" type="button"><span class="hold-fill"></span><span class="hold-txt">Закончить (держи)</span></button>
+      </div>
+    </div>
+
     <section id="tab-stats" class="tab hidden">
       <div class="wide">
         <div id="statsOffline" class="board hidden">Статистика доступна, когда есть связь с сервером.</div>
@@ -420,6 +453,7 @@
   <script src="dynamics.js"></script>
   <script src="workout.js"></script>
   <script src="scale.js"></script>
+  <script src="pushup.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

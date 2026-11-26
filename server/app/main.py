@@ -90,9 +90,16 @@ def _check_date(v: str) -> str:
     return v
 
 
+class CountedSet(BaseModel):
+    """v1.10: a set counted by the phone (proximity sensor): real reps instead of the board's planned `reps`."""
+    id: str = Field(max_length=64)
+    reps: int = Field(ge=0, le=1000)
+
+
 class SetsEntry(BaseModel):
     reps: int = Field(ge=0, le=10000)
     done: list[bool] = Field(max_length=50)
+    counted: list[CountedSet | None] | None = Field(default=None, max_length=50)   # aligned with `done`
 
 
 class DistanceEntry(BaseModel):
@@ -309,6 +316,27 @@ class Weighing(BaseModel):
         if not WEIGH_ID_RE.match(v):
             raise ValueError("bad weighing id")
         return v
+
+
+class PushupSet(BaseModel):
+    id: str
+    t: int = Field(ge=1_500_000_000_000, le=4_000_000_000_000)
+    reps: int = Field(ge=1, le=1000)
+    duration_s: float = Field(default=0, ge=0, le=7200)
+    armed_s: float | None = Field(default=None, ge=0, le=86400)
+    source: str = Field(default="proximity", max_length=40)
+    device: str | None = Field(default=None, max_length=40)
+
+    @field_validator("id")
+    @classmethod
+    def _id(cls, v: str) -> str:
+        if not WEIGH_ID_RE.match(v):
+            raise ValueError("bad set id")
+        return v
+
+
+class PushupBatch(BaseModel):
+    items: list[PushupSet] = Field(max_length=500)
 
 
 class WeighingBatch(BaseModel):
@@ -683,6 +711,26 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
     @app.delete("/api/weighings/{wid}", dependencies=A)
     def delete_weighing(wid: str):
         if not db.delete_weighing(wid):
+            raise HTTPException(404, "not found")
+        return {"ok": True}
+
+    # ---- v1.10: push-up sets counted by the proximity sensor ----
+    @app.post("/api/pushups", dependencies=A)
+    def post_pushups(b: PushupBatch):
+        return db.add_pushup_sets([x.model_dump() for x in b.items])
+
+    @app.get("/api/pushups", dependencies=A)
+    def list_pushups(days: Annotated[int, Query(ge=1, le=3650)] = 60):
+        now = datetime.now(tz)
+        since = int((now - _dt.timedelta(days=days)).timestamp() * 1000)
+        out = []
+        for w in db.list_pushup_sets(since):
+            out.append({**w, "date": datetime.fromtimestamp(w["t"] / 1000, tz).date().isoformat()})
+        return {"items": out}
+
+    @app.delete("/api/pushups/{sid}", dependencies=A)
+    def delete_pushup(sid: str):
+        if not db.delete_pushup_set(sid):
             raise HTTPException(404, "not found")
         return {"ok": True}
 

@@ -19,7 +19,9 @@ def day_metrics(rec: dict[str, Any], exercises: list[dict[str, Any]], since: dic
         done = [bool(x) for x in (v.get("done") or [])]
         n = sum(done)
         per = int(v.get("reps", cfg.get(ex_id, {}).get("reps", 0)))
-        reps[ex_id] = n * per
+        counted = v.get("counted") or []
+        # v1.10: a set counted by the phone carries its real reps; the others are the board's planned reps
+        reps[ex_id] = sum(int(counted[i]["reps"]) if i < len(counted) and counted[i] else per for i, d in enumerate(done) if d)
         sets_done[ex_id] = n
         planned = max(len(done), int(cfg.get(ex_id, {}).get("sets", 0)) if ex_id in cfg else len(done))
         total_items += planned

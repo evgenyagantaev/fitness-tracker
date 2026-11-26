@@ -124,6 +124,19 @@ final class ClipPlayer {
         });
     }
 
+    /** v1.10: one clip decoded to 16-bit PCM (for the push-up rep counter, which keeps them in memory); null if it can't be decoded */
+    static final class Pcm { final short[] pcm; final int sampleRate; Pcm(short[] p, int sr) { pcm = p; sampleRate = sr; } }
+    Pcm decodePcm(String token) {
+        try {
+            if (!available.contains(token + ".ogg")) return null;
+            Decoded d = decodeOgg(token + ".ogg");
+            if (d == null || d.samples.length == 0) return null;
+            short[] out = new short[d.samples.length];
+            for (int i = 0; i < out.length; i++) out[i] = (short) Math.max(-32768, Math.min(32767, Math.round(d.samples[i] * 32767f * 1.25f)));
+            return new Pcm(out, d.sampleRate);
+        } catch (Throwable t) { Log.w(TAG, "decodePcm " + token, t); return null; }
+    }
+
     private static final class Decoded {
         final float[] samples;
         final int sampleRate;

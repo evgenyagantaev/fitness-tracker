@@ -314,6 +314,97 @@ public class WorkoutRecorderPlugin extends Plugin {
     @PluginMethod
     public void scaleStop(PluginCall call) { stopLiveScale(); call.resolve(); }
 
+    // ---- v1.10 push-up counter (proximity sensor, voice count on every rep) ----
+    private PushupSession pushups;
+
+    private void keepScreenOn(boolean on) {
+        try {
+            getActivity().runOnUiThread(() -> {
+                if (on) getActivity().getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getActivity().getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            });
+        } catch (Exception ignored) {}
+    }
+
+    private PushupSession pushupSession() {
+        if (pushups == null) {
+            pushups = new PushupSession(getContext());
+            pushups.setListener(new PushupSession.Listener() {
+                @Override public void onRep(int reps, boolean undo) {
+                    JSObject o = new JSObject(); o.put("reps", reps); o.put("undo", undo);
+                    notifyListeners("pushup", o);
+                }
+                @Override public void onAutoFinished(JSONObject set, String reason) {
+                    keepScreenOn(false);
+                    JSObject o = new JSObject(); o.put("reason", reason);
+                    if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
+                    notifyListeners("pushupFinished", o, true);
+                }
+            });
+        }
+        return pushups;
+    }
+
+    @PluginMethod
+    public void pushupInfo(PluginCall call) {
+        PushupSession p = pushupSession();
+        JSObject r = new JSObject();
+        r.put("present", p.present()); r.put("maxRange", p.maxRange()); r.put("sensor", p.sensorName());
+        r.put("binary", p.maxRange() <= 5.5f); r.put("voice", p.voiceClips()); r.put("active", p.active());
+        WorkoutService s = WorkoutService.instance;
+        r.put("recording", s != null && s.workoutActive);
+        call.resolve(r);
+    }
+
+    /** start counting now (the web part does the countdown); refused while a workout is recorded */
+    @PluginMethod
+    public void pushupStart(PluginCall call) {
+        WorkoutService s = WorkoutService.instance;
+        if (s != null && s.workoutActive) { call.reject("Идёт запись тренировки", "recording"); return; }
+        String err = pushupSession().start();
+        if (err != null) { call.reject(err, err); return; }
+        keepScreenOn(true);
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void pushupUndo(PluginCall call) {
+        if (pushups != null) pushups.undo();
+        call.resolve();
+    }
+
+    /** end the set; resolves with {set} (null if nothing was counted) */
+    @PluginMethod
+    public void pushupFinish(PluginCall call) {
+        JSObject r = new JSObject();
+        if (pushups != null) {
+            JSONObject set = pushups.finish();
+            if (set != null) { try { r.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
+        }
+        keepScreenOn(false);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void takePushupSets(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("sets", PushupStore.take(getContext()));
+        call.resolve(r);
+    }
+
+    /** the proximity sensor is silent with the screen off / the app in the background: close the set, keep the reps */
+    @Override
+    protected void handleOnPause() {
+        super.handleOnPause();
+        if (pushups != null && pushups.active()) {
+            JSONObject set = pushups.finish();
+            keepScreenOn(false);
+            JSObject o = new JSObject(); o.put("reason", "background");
+            if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
+            notifyListeners("pushupFinished", o, true);
+        }
+    }
+
     @PluginMethod
     public void takeScaleReadings(PluginCall call) {
         JSObject r = new JSObject();

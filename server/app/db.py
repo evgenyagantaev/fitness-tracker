@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS weighings (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS weighings_t ON weighings(t);
+-- v1.10: push-up sets counted by the phone's proximity sensor (the day board is updated by the client; this keeps the detail)
+CREATE TABLE IF NOT EXISTS pushup_sets (
+    id TEXT PRIMARY KEY,
+    t INTEGER NOT NULL,              -- ms, start of counting (phone clock)
+    reps INTEGER NOT NULL,
+    duration_s REAL NOT NULL,        -- first rep -> last rep
+    source TEXT NOT NULL,
+    data TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pushup_sets_t ON pushup_sets(t);
 """
 
 
@@ -398,6 +410,40 @@ class Database:
         import time as _t
         with self.tx() as c:
             cur = c.execute("UPDATE weighings SET deleted=1, updated_at=? WHERE id=?", (int(_t.time() * 1000), wid))
+            return cur.rowcount > 0
+
+    # ---- push-up sets (v1.10) ----------------------------------------------------
+    @staticmethod
+    def _pu_row(r: sqlite3.Row) -> dict[str, Any]:
+        d = json.loads(r["data"])
+        d.update({"id": r["id"], "t": r["t"], "reps": r["reps"], "duration_s": r["duration_s"], "source": r["source"],
+                  "deleted": bool(r["deleted"]), "updated_at": r["updated_at"]})
+        return d
+
+    def add_pushup_sets(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        """Insert new sets; a repeat of a known id is ignored (also if it was deleted)."""
+        import time as _t
+        added = 0
+        now = int(_t.time() * 1000)
+        with self.tx() as c:
+            for w in items:
+                if c.execute("SELECT 1 FROM pushup_sets WHERE id=?", (w["id"],)).fetchone() is None:
+                    c.execute("INSERT INTO pushup_sets (id,t,reps,duration_s,source,data,deleted,updated_at) VALUES (?,?,?,?,?,?,0,?)",
+                              (w["id"], int(w["t"]), int(w["reps"]), float(w["duration_s"]), str(w.get("source") or "proximity"),
+                               json.dumps({k: v for k, v in w.items() if k not in ("id", "t", "reps", "duration_s", "source") and v is not None},
+                                          ensure_ascii=False), now))
+                    added += 1
+        return {"added": added}
+
+    def list_pushup_sets(self, since_t: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM pushup_sets WHERE deleted=0 AND t>=? ORDER BY t", (int(since_t),)).fetchall()
+        return [self._pu_row(r) for r in rows]
+
+    def delete_pushup_set(self, sid: str) -> bool:
+        import time as _t
+        with self.tx() as c:
+            cur = c.execute("UPDATE pushup_sets SET deleted=1, updated_at=? WHERE id=?", (int(_t.time() * 1000), sid))
             return cur.rowcount > 0
 
     def workouts_since(self, rev: int) -> list[dict[str, Any]]:

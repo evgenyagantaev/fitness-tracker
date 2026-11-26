@@ -22,6 +22,7 @@ final class VoiceClips {
     static final int MIN_PACE_MIN = 2, MAX_PACE_MIN = 25;
     static final int MAX_DIST_M = 43000;
     static final int MAX_FINISH_MIN = 300;
+    static final int MAX_REP = 200;   // v1.10: push-up counter says every rep: «один», «два», …
 
     private static final Map<String, String> EXACT = new HashMap<>();
     private static final Map<String, Integer> CUR_PACE_MIN = new HashMap<>();
@@ -47,6 +48,8 @@ final class VoiceClips {
             addWhole("fin.hr." + b, "Средний пульс " + RuNum.words(b) + ".");
         }
         for (int c = MIN_CAD; c <= MAX_CAD; c++) addWhole("curcad." + c, "Текущий каденс " + RuNum.words(c) + ".");
+
+        for (int n = 1; n <= MAX_REP; n++) addWhole("cnt." + n, RuNum.words(n) + ".");
 
         for (int m = 500; m <= MAX_DIST_M; m += 500) addWhole("dist." + m, RunPhrases.distance(m));
         for (int m = 100; m <= MAX_DIST_M; m += 100) {

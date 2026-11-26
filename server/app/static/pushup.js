@@ -1,0 +1,223 @@
+/* v1.10: push-up counter. The phone lies screen-up under the chest; the proximity sensor (native side) counts reps and says every
+   number aloud. Here: the set screen (countdown → big counter → hold to finish), putting finished sets on the day board with their real
+   reps, sending them to the server, and the site section (today, trend, delete). */
+(function () {
+  'use strict';
+  const { api, Store, isNative, localDate } = window.FT;
+  const $ = (id) => document.getElementById(id);
+  const P = (window.Capacitor && window.Capacitor.Plugins) || {};
+  const WR = isNative && P.WorkoutRecorder ? P.WorkoutRecorder : null;
+  const K_PEND = 'ft.pushPending', K_APPLIED = 'ft.pushApplied', K_CACHE = 'ft.pushSets';
+  const COUNTDOWN_S = 5;
+  let state = 'idle', countdownTimer = null, listeners = [], sessionSets = [], data = null, chart = null;
+
+  const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
+  const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const hm = (t) => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  const dur = (s) => { s = Math.round(s || 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  const plural = (n, a, b, c) => { const x = Math.abs(n) % 100, y = x % 10; return x >= 11 && x <= 14 ? c : y === 1 ? a : y >= 2 && y <= 4 ? b : c; };
+
+  // ---------- the day board ----------
+  function pushExercise() { return Store.exercises().find((e) => e.id === 'pushups'); }
+  function applyToBoard(set) {
+    if (!pushExercise()) return;
+    const applied = load(K_APPLIED, []);
+    if (applied.includes(set.id)) return;
+    const r = Store.view(localDate(new Date(set.t)));
+    const s = r.sets.pushups; if (!s) return;
+    s.counted = s.counted || [];
+    while (s.counted.length < s.done.length) s.counted.push(null);
+    let i = s.done.findIndex((d, k) => !d && !s.counted[k]);
+    if (i < 0) { if (s.done.length >= 50) return; i = s.done.length; s.done.push(false); s.counted.push(null); }
+    s.done[i] = true; s.counted[i] = { id: set.id, reps: set.reps };
+    Store.put(r);
+    applied.push(set.id); save(K_APPLIED, applied.slice(-500));
+  }
+  function removeFromBoard(id, date) {
+    const ex = pushExercise(); if (!ex) return;
+    const r = Store.view(date), s = r.sets.pushups;
+    if (!s || !s.counted) return;
+    const i = s.counted.findIndex((c) => c && c.id === id);
+    if (i < 0) return;
+    s.counted[i] = null; s.done[i] = false;
+    while (s.done.length > ex.sets && !s.done[s.done.length - 1] && !s.counted[s.counted.length - 1]) { s.done.pop(); s.counted.pop(); }
+    Store.put(r);
+  }
+
+  // ---------- phone → server ----------
+  function queue(sets) {
+    const pend = load(K_PEND, []);
+    for (const w of sets || []) if (!pend.some((x) => x.id === w.id)) pend.push(w);
+    save(K_PEND, pend.slice(-300));
+    return pend.length;
+  }
+  async function collect() {
+    if (!WR || !WR.takePushupSets) return 0;
+    try {
+      const r = await WR.takePushupSets();
+      for (const w of r.sets || []) applyToBoard(w);
+      return queue(r.sets || []);
+    } catch (e) { return load(K_PEND, []).length; }
+  }
+  let sending = null;
+  function flush() {
+    if (sending) return sending;
+    sending = (async () => {
+      await collect();
+      const pend = load(K_PEND, []);
+      if (!pend.length) return;
+      try {
+        await api('api/pushups', { method: 'POST', body: { items: pend } });
+        const left = load(K_PEND, []).filter((x) => !pend.some((p) => p.id === x.id));
+        save(K_PEND, left);
+      } catch (e) { /* offline: stays queued */ }
+    })().finally(() => { sending = null; });
+    return sending;
+  }
+
+  // ---------- the set screen (native only) ----------
+  function overlay(show) { $('pushOverlay').classList.toggle('hidden', !show); }
+  function setCount(n, wait) { const el = $('pushCount'); el.textContent = n; el.classList.toggle('wait', !!wait); }
+  function renderSession() {
+    const box = $('pushSession'); if (!box) return;
+    if (!sessionSets.length) { box.innerHTML = ''; return; }
+    const total = sessionSets.reduce((x, s) => x + s.reps, 0);
+    box.innerHTML = `<h4 class="sub">Эта серия: ${total} ${plural(total, 'раз', 'раза', 'раз')}, ${sessionSets.length} ${plural(sessionSets.length, 'подход', 'подхода', 'подходов')}</h4>` +
+      sessionSets.map((s, i) => `<div class="push-set"><span>${i + 1}. ${hm(s.t)}</span><b>${s.reps}</b><span class="muted">${dur(s.duration_s)}</span></div>`).join('');
+  }
+  async function startSet() {
+    if (!WR || state !== 'idle') return;
+    $('pushMsg').textContent = '';
+    let info = null;
+    try { info = await WR.pushupInfo(); } catch (e) { /* ignore */ }
+    if (info && info.recording) { $('pushMsg').textContent = 'Идёт запись тренировки: отжимания считать нельзя, пока она не закончится.'; return; }
+    if (info && !info.present) { $('pushMsg').textContent = 'В телефоне нет датчика приближения.'; return; }
+    state = 'countdown';
+    overlay(true);
+    $('pushPhase').textContent = 'Ложись, телефон экраном вверх под грудь';
+    $('pushHint').textContent = 'Начну считать через…';
+    let left = COUNTDOWN_S;
+    setCount(left, true);
+    countdownTimer = setInterval(() => {
+      left -= 1;
+      if (left > 0) { setCount(left, true); return; }
+      clearInterval(countdownTimer); countdownTimer = null;
+      armed();
+    }, 1000);
+  }
+  async function armed() {
+    try {
+      listeners = [await WR.addListener('pushup', (e) => { setCount(e.reps); }),
+        await WR.addListener('pushupFinished', (e) => finished(e.set, e.reason))];
+      await WR.pushupStart();
+    } catch (e) {
+      cleanup();
+      $('pushMsg').textContent = e && e.code === 'recording' ? 'Идёт запись тренировки.' : e && e.code === 'no-sensor' ? 'В телефоне нет датчика приближения.' : 'Не удалось запустить счёт: ' + ((e && e.message) || e);
+      return;
+    }
+    state = 'armed';
+    $('pushPhase').textContent = 'Считаю';
+    $('pushHint').textContent = 'Опускайся к телефону. Закончил — держи «Закончить».';
+    setCount(0);
+    try { if (navigator.vibrate) navigator.vibrate(150); } catch (e) { /* ignore */ }
+  }
+  function cleanup() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    listeners.forEach((l) => { try { l.remove(); } catch (e) { /* ignore */ } });
+    listeners = [];
+    state = 'idle';
+    overlay(false);
+  }
+  async function finishSet() {
+    if (state === 'countdown') { cleanup(); return; }
+    if (state !== 'armed') return;
+    let set = null;
+    try { set = (await WR.pushupFinish()).set || null; } catch (e) { /* ignore */ }
+    finished(set, 'user');
+  }
+  function finished(set, reason) {
+    cleanup();
+    if (set) {
+      applyToBoard(set); queue([set]);
+      sessionSets.push(set);
+      $('pushMsg').textContent = `Записан подход: ${set.reps} ${plural(set.reps, 'раз', 'раза', 'раз')}.` + (reason === 'idle' ? ' (закрыт сам: 2 минуты без отжиманий)' : reason === 'background' ? ' (приложение ушло в фон — датчик там не работает)' : '');
+    } else $('pushMsg').textContent = reason === 'empty' ? 'Отжиманий не было, подход не записан.' : 'Отжиманий не насчитано, подход не записан.';
+    renderSession();
+    flush().then(refresh);
+  }
+  // a button that acts only after being held: a chest touching the screen must not end the set or drop a rep by accident
+  function hold(btn, ms, fn) {
+    const fill = btn.querySelector('.hold-fill');
+    let t0 = 0, raf = 0;
+    const stop = () => { t0 = 0; cancelAnimationFrame(raf); fill.style.width = '0'; };
+    const step = () => {
+      if (!t0) return;
+      const p = Math.min(1, (performance.now() - t0) / ms);
+      fill.style.width = (p * 100) + '%';
+      if (p >= 1) { stop(); fn(); } else raf = requestAnimationFrame(step);
+    };
+    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); t0 = performance.now(); raf = requestAnimationFrame(step); });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach((n) => btn.addEventListener(n, stop));
+    btn.addEventListener('contextmenu', (e) => e.preventDefault());
+  }
+
+  // ---------- site section ----------
+  function groupByDate(items) {
+    const m = new Map();
+    for (const w of items) { const d = m.get(w.date) || { date: w.date, total: 0, best: 0, sets: 0 }; d.total += w.reps; d.best = Math.max(d.best, w.reps); d.sets += 1; m.set(w.date, d); }
+    return m;
+  }
+  function render(r) {
+    const items = (r && r.items) || [];
+    $('pushEmpty').classList.toggle('hidden', items.length > 0);
+    $('pushData').classList.toggle('hidden', !items.length);
+    if (!items.length) return;
+    const today = localDate(), by = groupByDate(items), td = by.get(today);
+    const week = items.filter((w) => w.t >= Date.now() - 7 * 86400000).reduce((x, w) => x + w.reps, 0);
+    const best = items.reduce((x, w) => Math.max(x, w.reps), 0);
+    const card = (v, k) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`;
+    $('pushCards').innerHTML = '<div class="cards">' + card(td ? td.total : 0, 'отжиманий сегодня') + card(td ? td.sets : 0, 'подходов сегодня') +
+      card(td ? td.best : 0, 'лучший подход сегодня') + card(week, 'за 7 дней') + card(best, 'рекорд подхода (60 дней)') + '</div>';
+    const mine = items.filter((w) => w.date === today).sort((a, b) => a.t - b.t);
+    $('pushToday').innerHTML = mine.length ? '<div class="table-wrap"><table class="calib-table"><tr><th>Время</th><th>Раз</th><th>Время подхода</th><th>Темп, раз/мин</th><th></th></tr>' +
+      mine.map((w) => `<tr><td>${hm(w.t)}</td><td><b>${w.reps}</b></td><td>${dur(w.duration_s)}</td><td>${w.duration_s >= 5 ? Math.round((w.reps - 1) * 60 / w.duration_s) : '—'}</td><td><button class="btn small-btn push-del" data-id="${esc(w.id)}" data-date="${esc(w.date)}" title="Удалить подход">✕</button></td></tr>`).join('') + '</table></div>' : '';
+    document.querySelectorAll('.push-del').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Удалить этот подход?')) return;
+      try { await api('api/pushups/' + encodeURIComponent(b.dataset.id), { method: 'DELETE' }); removeFromBoard(b.dataset.id, b.dataset.date); refresh(); }
+      catch (e) { alert('Не удалось удалить: ' + e.message); }
+    }));
+    drawChart(by);
+  }
+  function drawChart(by) {
+    if (!window.Chart) return;
+    const days = [];
+    for (let i = 29; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(localDate(d)); }
+    const labels = days.map((d) => d.slice(8) + '.' + d.slice(5, 7));
+    if (chart) chart.destroy();
+    chart = new Chart($('pushChart'), { type: 'bar',
+      data: { labels, datasets: [
+        { type: 'bar', label: 'всего за день', data: days.map((d) => (by.get(d) ? by.get(d).total : 0)), backgroundColor: 'rgba(57,211,83,.6)', yAxisID: 'y', order: 2 },
+        { type: 'line', label: 'лучший подход', data: days.map((d) => (by.get(d) ? by.get(d).best : null)), borderColor: '#ffb020', backgroundColor: '#ffb020', yAxisID: 'y', spanGaps: true, tension: 0.2, order: 1 },
+      ] },
+      options: { maintainAspectRatio: false, animation: false, scales: { y: { beginAtZero: true, title: { display: true, text: 'раз' }, ticks: { precision: 0 } } } } });
+  }
+  async function refresh() {
+    await flush();
+    try { data = await api('api/pushups?days=60'); save(K_CACHE, data); $('pushOffline').classList.add('hidden'); }
+    catch (e) { data = load(K_CACHE, null); $('pushOffline').classList.remove('hidden'); }
+    render(data);
+    const pend = load(K_PEND, []).length;
+    if ($('pushPending')) $('pushPending').textContent = pend ? `Не отправлено на сервер: ${pend}` : '';
+  }
+
+  function init() {
+    if ($('pushStart')) $('pushStart').addEventListener('click', startSet);
+    if ($('pushFinish')) hold($('pushFinish'), 1200, finishSet);
+    if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) flush(); });
+    setTimeout(flush, 5000);
+  }
+  init();
+  window.FTPush = { refresh, onShow: () => { refresh(); }, flush, _applyToBoard: applyToBoard, _removeFromBoard: removeFromBoard };
+})();
