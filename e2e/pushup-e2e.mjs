@@ -40,10 +40,13 @@ try {
     const L = {}; let pending = []; let reps = 0, t0 = 0, recording = false;
     window.__push = {
       rep: () => { reps += 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: false })); },
-      setRecording: (v) => { recording = v; }, calls: [],
+      setRecording: (v) => { recording = v; },
+      unlock: () => { (L.pushupUnlocked || []).forEach((cb) => cb({})); },
+      calls: [],
     };
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { WorkoutRecorder: {
       async addListener(n, cb) { (L[n] = L[n] || []).push(cb); return { remove: async () => { L[n] = (L[n] || []).filter((x) => x !== cb); } }; },
+      async setPushupGuard({ on }) { window.__push.calls.push(on ? 'guard-on' : 'guard-off'); },
       async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: false, recording }; },
       async pushupStart() { window.__push.calls.push('start'); reps = 0; t0 = Date.now(); },
       async pushupUndo() { if (reps > 0) { reps -= 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: true })); } window.__push.calls.push('undo'); },
@@ -62,8 +65,18 @@ try {
   await ap.waitForSelector('#pushData:not(.hidden)');
   await ap.click('#pushStart');
   ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '5', 'countdown overlay starts at 5');
+  ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'locked during countdown');
+  ok((await ap.textContent('#pushHint')).includes('Экран заблокирован'), 'lock hint shown');
   await ap.waitForFunction(() => window.__push.calls.includes('start'), null, { timeout: 9000 });
   ok(true, 'counting started after the countdown');
+  ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'still locked after counting starts');
+  ok((await ap.locator('#pushUndo').boundingBox()) == null, 'buttons hidden while locked');
+  // a click where the finish button will be must not end the set
+  await ap.mouse.click(195, 760);
+  ok(await ap.isVisible('#pushOverlay') && await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'touch is ignored while locked');
+  await ap.evaluate(() => window.__push.unlock());
+  ok(!(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked'))), 'volume unlocks the screen');
+  ok((await ap.textContent('#pushHint')).includes('Закончить'), 'hint after unlock mentions Закончить');
   for (let i = 0; i < 21; i++) { await ap.evaluate(() => window.__push.rep()); }
   ok((await ap.textContent('#pushCount')) === '21', 'counter shows 21');
   await ap.evaluate(() => { document.querySelector('#pushUndo'); });
@@ -82,8 +95,11 @@ try {
   ok((await ap.textContent('#pushMsg')).includes('20'), 'set of 20 recorded: ' + (await ap.textContent('#pushMsg')));
   // second set of 12
   await ap.click('#pushStart'); await ap.waitForFunction(() => window.__push.calls.filter((c) => c === 'start').length === 2, null, { timeout: 9000 });
+  ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'next set starts locked');
+  await ap.evaluate(() => window.__push.unlock());
   for (let i = 0; i < 12; i++) await ap.evaluate(() => window.__push.rep());
-  await ap.mouse.move(fb.x + 10, fb.y + 10); await ap.mouse.down(); await ap.waitForTimeout(1500); await ap.mouse.up();
+  const fb2 = await ap.locator('#pushFinish').boundingBox();
+  await ap.mouse.move(fb2.x + 10, fb2.y + 10); await ap.mouse.down(); await ap.waitForTimeout(1500); await ap.mouse.up();
   await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'));
   // server has both, day board shows them as ticked with the real reps
   await ap.waitForTimeout(800);

@@ -39,6 +39,30 @@ public class WorkoutRecorderPlugin extends Plugin {
         WorkoutService.sessionListener = () -> {
             try { notifyListeners("sessionFinished", new JSObject(), true); } catch (Exception ignored) {}
         };
+        try {
+            getActivity().runOnUiThread(() -> {
+                if (getActivity() instanceof MainActivity) {
+                    ((MainActivity) getActivity()).setOnPushupUnlocked(() -> {
+                        try { notifyListeners("pushupUnlocked", new JSObject()); } catch (Exception ignored) {}
+                    });
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
+    /** v1.12: lock or release the full-screen touch guard for a push-up set. */
+    private void applyPushupGuard(boolean on) {
+        try {
+            getActivity().runOnUiThread(() -> {
+                if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).setPushupGuard(on);
+            });
+        } catch (Exception ignored) {}
+    }
+
+    @PluginMethod
+    public void setPushupGuard(PluginCall call) {
+        applyPushupGuard(call.getBoolean("on", false));
+        call.resolve();
     }
 
     @PluginMethod
@@ -336,6 +360,7 @@ public class WorkoutRecorderPlugin extends Plugin {
                 }
                 @Override public void onAutoFinished(JSONObject set, String reason) {
                     keepScreenOn(false);
+                    applyPushupGuard(false);
                     JSObject o = new JSObject(); o.put("reason", reason);
                     if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
                     notifyListeners("pushupFinished", o, true);
@@ -382,6 +407,7 @@ public class WorkoutRecorderPlugin extends Plugin {
             if (set != null) { try { r.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
         }
         keepScreenOn(false);
+        applyPushupGuard(false);
         call.resolve(r);
     }
 
@@ -399,6 +425,7 @@ public class WorkoutRecorderPlugin extends Plugin {
         if (pushups != null && pushups.active()) {
             JSONObject set = pushups.finish();
             keepScreenOn(false);
+            applyPushupGuard(false);
             JSObject o = new JSObject(); o.put("reason", "background");
             if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
             notifyListeners("pushupFinished", o, true);

@@ -199,6 +199,8 @@ select { background: #222; color: #eee; border: 1px solid #444; border-radius: 6
 .push-count.wait { color: #ffb020; }
 .push-phase { font-size: 20px; color: #bbb; text-align: center; padding: 0 16px; }
 .push-hint { font-size: 14px; color: #888; text-align: center; padding: 0 16px; min-height: 20px; }
+.push-hint.lock { color: #ffb020; font-size: 16px; }
+.push-overlay.locked .push-btns { display: none; }
 .push-btns { display: flex; gap: 12px; margin-top: 18px; }
 .hold { position: relative; overflow: hidden; min-width: 130px; }
 .hold .hold-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.28); pointer-events: none; }

@@ -9,7 +9,7 @@
   const WR = isNative && P.WorkoutRecorder ? P.WorkoutRecorder : null;
   const K_PEND = 'ft.pushPending', K_APPLIED = 'ft.pushApplied', K_CACHE = 'ft.pushSets';
   const COUNTDOWN_S = 5;
-  let state = 'idle', countdownTimer = null, listeners = [], sessionSets = [], data = null, chart = null;
+  let state = 'idle', locked = false, countdownTimer = null, listeners = [], sessionSets = [], data = null, chart = null;
 
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
   const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
@@ -67,6 +67,18 @@
   // ---------- the set screen (native only) ----------
   function overlay(show) { $('pushOverlay').classList.toggle('hidden', !show); }
   function setCount(n, wait) { const el = $('pushCount'); el.textContent = n; el.classList.toggle('wait', !!wait); }
+  // v1.12: the native side swallows every touch until a volume key is pressed
+  function setLocked(on) {
+    locked = !!on;
+    $('pushOverlay').classList.toggle('locked', locked);
+    $('pushHint').classList.toggle('lock', locked);
+    hint();
+  }
+  function hint() {
+    if (state === 'countdown') $('pushHint').textContent = locked ? 'Экран заблокирован — нажми громкость' : 'Начну считать через…';
+    else if (state === 'armed') $('pushHint').textContent = locked ? 'Экран заблокирован — нажми громкость' : 'Опускайся к телефону. Закончил — держи «Закончить».';
+  }
+  async function guard(on) { if (WR && WR.setPushupGuard) { try { await WR.setPushupGuard({ on: !!on }); } catch (e) { /* ignore */ } } }
   function renderSession() {
     const box = $('pushSession'); if (!box) return;
     if (!sessionSets.length) { box.innerHTML = ''; return; }
@@ -84,7 +96,9 @@
     state = 'countdown';
     overlay(true);
     $('pushPhase').textContent = 'Ложись, телефон экраном вверх под грудь';
-    $('pushHint').textContent = 'Начну считать через…';
+    setLocked(true);
+    await guard(true);
+    listeners = [WR.addListener ? await WR.addListener('pushupUnlocked', () => setLocked(false)) : { remove: async () => {} }];
     let left = COUNTDOWN_S;
     setCount(left, true);
     countdownTimer = setInterval(() => {
@@ -96,8 +110,8 @@
   }
   async function armed() {
     try {
-      listeners = [await WR.addListener('pushup', (e) => { setCount(e.reps); }),
-        await WR.addListener('pushupFinished', (e) => finished(e.set, e.reason))];
+      listeners.push(await WR.addListener('pushup', (e) => { setCount(e.reps); }),
+        await WR.addListener('pushupFinished', (e) => finished(e.set, e.reason)));
       await WR.pushupStart();
     } catch (e) {
       cleanup();
@@ -106,7 +120,7 @@
     }
     state = 'armed';
     $('pushPhase').textContent = 'Считаю';
-    $('pushHint').textContent = 'Опускайся к телефону. Закончил — держи «Закончить».';
+    hint();
     setCount(0);
     try { if (navigator.vibrate) navigator.vibrate(150); } catch (e) { /* ignore */ }
   }
@@ -115,9 +129,12 @@
     listeners.forEach((l) => { try { l.remove(); } catch (e) { /* ignore */ } });
     listeners = [];
     state = 'idle';
+    setLocked(false);
+    guard(false);
     overlay(false);
   }
   async function finishSet() {
+    if (locked) return;
     if (state === 'countdown') { cleanup(); return; }
     if (state !== 'armed') return;
     let set = null;
@@ -202,7 +219,7 @@
   function init() {
     if ($('pushStart')) $('pushStart').addEventListener('click', startSet);
     if ($('pushFinish')) hold($('pushFinish'), 1200, finishSet);
-    if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
+    if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (!locked && state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) flush(); });
     setTimeout(flush, 5000);
   }
