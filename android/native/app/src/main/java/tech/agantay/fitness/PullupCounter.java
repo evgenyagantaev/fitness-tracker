@@ -23,7 +23,7 @@ final class PullupCounter {
     static double V_FLOOR = 0.12, ADAPT = 0.30, V_CAP = 0.45;   // m/s
     static double DISP_MIN = 0.13;   // m (real rise 0.4–0.6 m, the filters keep ~70–90 % of it; arms settling after the jump ≈ 0.06)
     static final long MIN_REP_MS = 1000, FREEFALL_MS = 120, LAND_WINDOW_MS = 1200;
-    static final double FREEFALL_A = 0.45 * G, LAND_A = 1.6 * G;
+    static final double FREEFALL_A = 0.35 * G, LAND_A = 1.6 * G;
     static final long LAND_CLOSE_MS = 2500, IDLE_CLOSE_MS = 15_000, EMPTY_CLOSE_MS = 180_000, LAND_MUTE_MS = 1500;
 
     enum Phase { WAIT, UP, DOWN }
@@ -36,6 +36,7 @@ final class PullupCounter {
     static final double CALM_TAU = 0.12, V_CLAMP = 1.5;
     static double CALM_BAND = 0.1, CALM_DEV = 0.1;
     static final long CALM_MS = 500;
+    static long OFFBASE_MS = 1500;
     static final int WIN = 256;   // ≥ 2 × CALM_MS of samples at up to 200 Hz
     private final long[] winT = new long[WIN];
     private final double[] winV = new double[WIN];
@@ -47,7 +48,7 @@ final class PullupCounter {
     private int reps = 0;
     private final List<Long> repT = new ArrayList<>();
     private final List<Double> peaks = new ArrayList<>();
-    private long ffStart = -1, ffEnd = -1, landT = -1;
+    private long ffStart = -1, ffEnd = -1, ffDone = -1, landT = -1;
     private String closeReason = null;
     private long closeAt = -1;
 
@@ -89,11 +90,20 @@ final class PullupCounter {
         // landing detector on the raw magnitude
         boolean fellNow = false;
         boolean ffOver = false;
-        if (m < FREEFALL_A) { if (ffStart < 0) ffStart = t; ffEnd = t; fellNow = ffEnd - ffStart >= FREEFALL_MS; }
-        else {
-            ffOver = ffStart >= 0 && ffEnd == prevT && ffEnd - ffStart >= FREEFALL_MS;
-            if (ffStart >= 0 && ffEnd - ffStart >= FREEFALL_MS && m > LAND_A && t - ffEnd <= LAND_WINDOW_MS) { landT = t; ffStart = -1; }
-            else if (ffStart >= 0 && t - ffEnd > LAND_WINDOW_MS) ffStart = -1;
+        // free fall = |a| below FREEFALL_A without a break for FREEFALL_MS (v1.17.1: the dips of a leg swinging in a pocket reach
+        // 0.3 g for 60 ms; they used to be added up over 1.2 s and read as a flight, which reset the rep in progress)
+        if (m < FREEFALL_A) {
+            if (ffStart < 0) ffStart = t;
+            ffEnd = t; fellNow = ffEnd - ffStart >= FREEFALL_MS;
+        } else {
+            if (ffStart >= 0) {
+                if (ffEnd - ffStart >= FREEFALL_MS) { ffOver = true; ffDone = ffEnd; }
+                ffStart = -1;
+            }
+            if (ffDone >= 0) {
+                if (m > LAND_A) { landT = t; ffDone = -1; }
+                else if (t - ffDone > LAND_WINDOW_MS) ffDone = -1;
+            }
         }
         // baseline only follows calm signal, so a long hang or a rep does not drag it
         double clipped = Math.max(base - 3, Math.min(base + 3, m));
@@ -111,11 +121,14 @@ final class PullupCounter {
         }
         calmRef = hi - lo;
         // a slow rep's steady middle looks still too, so inside UP/DOWN it takes twice as long
-        long need = 2 * CALM_MS;
-        boolean still = hi - lo < 2 * CALM_BAND && Math.abs(lp2 - base) < CALM_DEV && t - oldest >= CALM_MS - 60;
-        if (!still) calmSince = t;   // calmSince = when the last CALM_MS window first looked still
-        boolean calm = still && t - calmSince + CALM_MS >= need;
-        if (calm) base += (lp2 - base) * Math.min(1.0, dt / 0.3);
+        // still for 1 s with |a| on the baseline, or for 1.5 s with |a| anywhere (the baseline may be off after a jump or a
+        // swing, and then nothing would ever look "on the baseline" again: that froze v and lost the first rep of a real set)
+        boolean stillCore = hi - lo < 2 * CALM_BAND && t - oldest >= CALM_MS - 60;
+        if (!stillCore) calmSince = t;   // calmSince = when the last CALM_MS window first looked still
+        long stillFor = t - calmSince + CALM_MS;
+        boolean onBase = Math.abs(lp2 - base) < CALM_DEV;
+        boolean calm = stillCore && (onBase ? stillFor >= 2 * CALM_MS : stillFor >= OFFBASE_MS);
+        if (calm) base += (lp2 - base) * Math.min(1.0, dt / (onBase ? 0.3 : 0.15));
         double av = m - base;
         sm += (av - sm) * Math.min(1.0, dt / SMOOTH_TAU);
         v += sm * dt;
@@ -159,7 +172,7 @@ final class PullupCounter {
                 }
                 break;
         }
-        if (debug != null && (t % 50 == 0 || was != phase)) debug.append(String.format(java.util.Locale.ROOT, "%d m=%.2f av=%.2f v=%.3f %s up=%.2f dn=%.2f lp2=%.2f ref=%.2f cs=%d base=%.2f%s%n", t, m, sm, v, phase, upDisp, dnDisp, lp2, calmRef, calmSince, base, rep ? " REP" : ""));
+        if (debug != null && (t % 50 == 0 || was != phase || (System.getenv("PU_ALL") != null))) debug.append(String.format(java.util.Locale.ROOT, "%d m=%.2f av=%.2f v=%.3f %s up=%.2f dn=%.2f lp2=%.2f ref=%.2f cs=%d base=%.2f thr=%.3f calm=%d ff=%d land=%d%s%n", t, m, sm, v, phase, upDisp, dnDisp, lp2, calmRef, calmSince, base, thr, calm?1:0, fellNow?1:0, landT, rep ? " REP" : ""));
         // closing
         if (counting && closeReason == null) {
             if (reps > 0 && landT >= 0 && landT > lastRepT() - 300 && t - landT >= LAND_CLOSE_MS) close("landed", t);

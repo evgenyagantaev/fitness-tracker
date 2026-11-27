@@ -200,6 +200,20 @@ public class PullupCounterTest {
         assertEquals(6, c.reps());
     }
 
+    /** v1.17.1 regression (first real set): short |a| dips of a swinging pocket must not add up to a "flight" */
+    @Test public void brokenLowDipsAreNotFreeFall() {
+        PullupCounter c = new PullupCounter();
+        long t = 1000;
+        for (int i = 0; i < 300; i++, t += 10) c.onSample(t, 0, 0, 9.8);
+        c.go(t);
+        for (int i = 0; i < 100; i++, t += 10) {          // 1 s: 60 ms dips to 3 m/s², 40 ms normal, repeated
+            double a = (i % 10) < 6 ? 3.0 : 9.8;
+            c.onSample(t, 0, 0, a);
+        }
+        for (int i = 0; i < 20; i++, t += 10) c.onSample(t, 0, 0, 25);   // an impact right after: no landing without a real fall
+        assertEquals(-1, c.landT());
+    }
+
     @Test public void undo() {
         PullupCounter c = new PullupCounter();
         assertFalse(c.undo());
