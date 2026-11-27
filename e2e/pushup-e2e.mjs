@@ -47,7 +47,7 @@ try {
       calls: [],
     };
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { WorkoutRecorder: {
-      async addListener(n, cb) { (L[n] = L[n] || []).push(cb); return { remove: async () => { L[n] = (L[n] || []).filter((x) => x !== cb); } }; },
+      addListener(n, cb) { (L[n] = L[n] || []).push(cb); return { remove: async () => { L[n] = (L[n] || []).filter((x) => x !== cb); } }; },   // like the real bridge: a plain handle, not a promise
       async setPushupGuard({ on, locked }) { window.__push.calls.push(on ? 'guard-on' : 'guard-off'); window.__push.guard = on ? (locked === false ? 'unlocked' : 'locked') : 'off'; },
       async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: !!window.__push.nativeActive, paused: false, reps: window.__push.nativeActive ? (window.__push.liveReps != null ? window.__push.liveReps : reps) : 0, guard: window.__push.guard || 'off', recording }; },
       async pushupStart() { window.__push.calls.push('start'); reps = 0; t0 = Date.now(); window.__push.nativeActive = true; },

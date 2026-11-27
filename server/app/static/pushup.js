@@ -86,14 +86,23 @@
     box.innerHTML = `<h4 class="sub">Эта серия: ${total} ${plural(total, 'раз', 'раза', 'раз')}, ${sessionSets.length} ${plural(sessionSets.length, 'подход', 'подхода', 'подходов')}</h4>` +
       sessionSets.map((s, i) => `<div class="push-set"><span>${i + 1}. ${hm(s.t)}</span><b>${s.reps}</b><span class="muted">${dur(s.duration_s)}</span></div>`).join('');
   }
+  /** Capacitor's native addListener returns a plain {remove} handle on this build (no .then/.catch), older ones a promise: accept both, never throw */
+  function listen(name, cb) {
+    try {
+      const r = WR.addListener(name, cb);
+      if (r && typeof r.then === 'function') r.then(null, () => {});
+      return true;
+    } catch (e) { return false; }
+  }
   function bindNative() {
     if (nativeBound || !WR || !WR.addListener) return;
-    nativeBound = true;
-    WR.addListener('pushup', (e) => { if (state === 'armed') setCount(e.reps); }).catch(() => {});
-    WR.addListener('pushupFinished', (e) => finished(e.set, e.reason)).catch(() => {});
-    WR.addListener('pushupUnlocked', () => setLocked(false)).catch(() => {});
-    WR.addListener('pushupResumed', (e) => onResumed(e)).catch(() => {});
-    WR.addListener('pushupPaused', () => { /* keep the overlay and the count; the native side has only dropped the sensor */ }).catch(() => {});
+    const ok = [
+      listen('pushup', (e) => { if (state === 'armed') setCount(e.reps); }),
+      listen('pushupFinished', (e) => finished(e.set, e.reason)),
+      listen('pushupUnlocked', () => setLocked(false)),
+      listen('pushupResumed', (e) => onResumed(e)),
+    ].every(Boolean);
+    nativeBound = ok;
   }
   /** the native side owns the lock: the screen shows whatever it says (`lock`), it never locks itself */
   function showArmed(n, lock) {
@@ -261,7 +270,7 @@
     if ($('pushFinish')) hold($('pushFinish'), 1200, finishSet);
     if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (!locked && state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
     document.addEventListener('visibilitychange', () => { if (document.hidden) return; flush(); sync(); });
-    bindNative();
+    try { bindNative(); } catch (e) { /* listeners retried on the next set */ }
     setInterval(() => { if (state === 'armed' || !overlayHidden()) sync(); }, 2000);
     setTimeout(flush, 5000);
     setTimeout(sync, 400);
