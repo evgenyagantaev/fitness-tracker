@@ -1,5 +1,5 @@
 /* v1.17: pull-up counter on the phone accelerometer. The phone is in a pocket or on the neck; the native side does the countdown
-   (voice 5…1, beep), counts every rep aloud with the screen off and closes the set by itself after you drop off the bar.
+   (voice 5…1, beep), counts every rep aloud with the screen off and closes the set by itself after 8 s without a new rep.
    Here: the set screen (shows the native state), finished sets → day board (📲 cell) and server (with the raw accelerometer, for
    tuning), and the section (today from the board, trend). */
 (function () {
@@ -18,7 +18,7 @@
   const hm = (t) => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const dur = (s) => { s = Math.round(s || 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
   const plural = (n, a, b, c) => { const x = Math.abs(n) % 100, y = x % 10; return x >= 11 && x <= 14 ? c : y === 1 ? a : y >= 2 && y <= 4 ? b : c; };
-  const REASON = { landed: 'закрыт сам: спрыгнул', idle: 'закрыт сам: 15 с без повторов', empty: 'закрыт сам: повторов не было', limit: 'закрыт сам: 10 минут', button: 'закрыт кнопкой в уведомлении', recovered: 'восстановлен после закрытия приложения' };
+  const REASON = { landed: 'закрыт сам: спрыгнул', idle: 'закрыт сам: 8 с без повторов', empty: 'закрыт сам: повторов не было', limit: 'закрыт сам: 10 минут', button: 'закрыт кнопкой в уведомлении', recovered: 'восстановлен после закрытия приложения' };
 
   // ---------- the day board ----------
   function pullExercise() { return Store.exercises().find((e) => e.id === 'pullups'); }
@@ -69,10 +69,10 @@
     if (!st || !st.active) return;
     if (!open) overlay(true);
     const cd = st.countdown || 0;
-    $('pullPhase').textContent = cd > 0 ? 'Убери телефон в карман или повесь на шею и запрыгивай' : 'Считаю';
+    $('pullPhase').textContent = cd > 0 ? 'Убери телефон в карман или повесь на шею и повисни на перекладине' : 'Считаю';
     const el = $('pullCount'); el.textContent = cd > 0 ? cd : (st.reps || 0); el.classList.toggle('wait', cd > 0);
     $('pullHint').textContent = cd > 0 ? 'Старт после сигнала. Экран можно выключить кнопкой питания.'
-      : (st.sensorOk === false ? 'Нет данных акселерометра…' : 'Спрыгнешь и постоишь пару секунд — подход закроется сам. Можно и кнопкой.');
+      : (st.sensorOk === false ? 'Нет данных акселерометра…' : 'Повисишь 8 секунд без повторов — подход закроется сам. Можно и кнопкой.');
   }
   function listen(name, cb) {
     try { const r = WR.addListener(name, cb); if (r && typeof r.then === 'function') r.then(null, () => {}); return true; } catch (e) { return false; }

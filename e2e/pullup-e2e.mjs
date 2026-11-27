@@ -1,4 +1,4 @@
-// v1.17 pull-up counter: set screen driven by a mocked native session (native countdown → reps → auto close on landing),
+// v1.17 pull-up counter: set screen driven by a mocked native session (native countdown → reps → auto close on idle),
 // sets land on the day board (📲) and on the server with the raw block; site section. Own server on a temp DB, synthetic data only.
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -39,7 +39,7 @@ try {
       S, calls: [],
       tick: () => { if (S.countdown > 0) S.countdown -= 1; emit('pullup', st()); },
       rep: () => { S.reps += 1; emit('pullup', st()); },
-      land: () => { const set = mk('landed'); S.active = false; if (set) pending.push(set); const lite = set && Object.assign({}, set); if (lite) delete lite.raw; emit('pullupFinished', { set: lite, reason: 'landed' }); },
+      idle: () => { const set = mk('idle'); S.active = false; if (set) pending.push(set); const lite = set && Object.assign({}, set); if (lite) delete lite.raw; emit('pullupFinished', { set: lite, reason: 'idle' }); },
       setRecording: (v) => { S.recording = v; },
     };
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { WorkoutRecorder: {
@@ -84,9 +84,9 @@ try {
   await ap.waitForFunction(() => document.getElementById('pullCount').textContent === '8');
   ok(true, 'holding −1 drops a rep');
   await ap.screenshot({ path: shotPath('pull-app-counter.png') });
-  await ap.evaluate(() => window.__pull.land());
+  await ap.evaluate(() => window.__pull.idle());
   await ap.waitForFunction(() => document.querySelector('#pullOverlay').classList.contains('hidden'));
-  ok((await ap.textContent('#pullMsg')).includes('8') && (await ap.textContent('#pullMsg')).includes('спрыгнул'), 'auto-closed set recorded: ' + (await ap.textContent('#pullMsg')));
+  ok((await ap.textContent('#pullMsg')).includes('8 с без повторов'), 'auto-closed set recorded: ' + (await ap.textContent('#pullMsg')));
   const cells = await ap.evaluate(() => FT.Store.view(FT.localDate()).sets.pullups.cells);
   ok(cells.length >= 1 && cells[0].reps === 8 && cells[0].src === 'auto', 'board pull-up row got an auto cell: ' + JSON.stringify(cells));
   await ap.waitForFunction(async () => (await fetch(JSON.parse(localStorage.getItem('ft.config')).serverUrl + 'api/pullups', { headers: { Authorization: 'Bearer pull-test-token' } }).then((r) => r.json())).items.length === 1, null, { timeout: 10000 });

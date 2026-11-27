@@ -81,7 +81,7 @@ public class PullupService extends Service {
         return new NotificationCompat.Builder(c, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setContentTitle(title)
-            .setContentText("Счёт по акселерометру. Подход закроется сам, когда спрыгнешь.")
+            .setContentText("Счёт по акселерометру. Подход закроется сам через 8 с без повторов.")
             .setOngoing(true).setOnlyAlertOnce(true).setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_WORKOUT)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)

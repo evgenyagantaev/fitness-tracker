@@ -8,12 +8,15 @@ import java.util.List;
  * v1.17: pull-up reps from the phone accelerometer (pocket or on the neck). Pure, unit-tested on synthetic signals.
  *
  * Orientation-free: the body moves almost only vertically on the bar, so |a| − g ≈ vertical acceleration whatever way the phone
- * lies (pocket, swinging case). Pipeline per sample: magnitude → minus slow baseline (τ 3 s, also absorbs sensor scale error) →
- * light smoothing (τ 0.08 s) → leaky integral = vertical velocity v (τ 2.5 s, kills drift).
+ * lies (pocket, swinging case). Pipeline per sample: magnitude → minus slow baseline (τ 20 s, also absorbs sensor scale error) →
+ * light smoothing (τ 0.08 s) → leaky integral = vertical velocity v (τ 1.2 s, kills drift).
  * One rep = an UP phase (v above vUp, ≥ DISP_MIN of rise) followed by a DOWN phase (v below −vDn, ≥ DISP_MIN of lowering),
- * counted when the lowering stops at the bottom. Jumping onto the bar merges with the first rep's rise (no extra count); the small
- * drop when the arms straighten is far below DISP_MIN. Thresholds adapt: vUp/vDn = max(floor, 0.35 × median peak of earlier reps).
- * Landing (≥ FREEFALL_MS of |a| < 0.45 g, then a ≥ 1.6 g impact) closes the set LAND_CLOSE_MS later; no rep for IDLE_CLOSE_MS too.
+ * counted when the lowering stops at the bottom. A soft hang on a door-frame bar is not a jump and is not counted; a soft step
+ * back onto the floor is only a short lowering, far below a full rep. Thresholds adapt:
+ * vUp/vDn = max(floor, 0.30 × median peak of earlier reps), capped.
+ * The set closes after IDLE_CLOSE_MS without a new rep, or EMPTY_CLOSE_MS if there were none; the session also caps at 10 min.
+ * There is no jump / free-fall / landing detector: the bar is in a door frame, so the set starts with a soft hang and ends
+ * with a soft step onto the floor.
  */
 final class PullupCounter {
     static final double G = 9.80665;
@@ -21,10 +24,9 @@ final class PullupCounter {
     // tunables (not final so the synthetic-signal tests can sweep them)
     static double VEL_TAU = 1.2, DOWN_EXIT = 0.25;
     static double V_FLOOR = 0.12, ADAPT = 0.30, V_CAP = 0.45;   // m/s
-    static double DISP_MIN = 0.13;   // m (real rise 0.4–0.6 m, the filters keep ~70–90 % of it; arms settling after the jump ≈ 0.06)
-    static final long MIN_REP_MS = 1000, FREEFALL_MS = 120, LAND_WINDOW_MS = 1200;
-    static final double FREEFALL_A = 0.35 * G, LAND_A = 1.6 * G;
-    static final long LAND_CLOSE_MS = 2500, IDLE_CLOSE_MS = 15_000, EMPTY_CLOSE_MS = 180_000, LAND_MUTE_MS = 1500;
+    static double DISP_MIN = 0.13;   // m (real rise 0.4–0.6 m, the filters keep ~70–90 % of it; a soft step down is shorter)
+    static final long MIN_REP_MS = 1000;
+    static final long IDLE_CLOSE_MS = 8_000, EMPTY_CLOSE_MS = 180_000;
 
     enum Phase { WAIT, UP, DOWN }
     static StringBuilder debug = null;   // tests only
@@ -48,7 +50,6 @@ final class PullupCounter {
     private int reps = 0;
     private final List<Long> repT = new ArrayList<>();
     private final List<Double> peaks = new ArrayList<>();
-    private long ffStart = -1, ffEnd = -1, ffDone = -1, landT = -1;
     private String closeReason = null;
     private long closeAt = -1;
 
@@ -60,7 +61,6 @@ final class PullupCounter {
     long lastRepT() { return repT.isEmpty() ? -1 : repT.get(repT.size() - 1); }
     double velocity() { return v; }
     Phase phase() { return phase; }
-    long landT() { return landT; }
 
     double vThr() {
         if (peaks.isEmpty()) return V_FLOOR;
@@ -87,24 +87,6 @@ final class PullupCounter {
         lastT = t;
         if (dt <= 0) return false;
         if (dt > 0.1) dt = 0.1;
-        // landing detector on the raw magnitude
-        boolean fellNow = false;
-        boolean ffOver = false;
-        // free fall = |a| below FREEFALL_A without a break for FREEFALL_MS (v1.17.1: the dips of a leg swinging in a pocket reach
-        // 0.3 g for 60 ms; they used to be added up over 1.2 s and read as a flight, which reset the rep in progress)
-        if (m < FREEFALL_A) {
-            if (ffStart < 0) ffStart = t;
-            ffEnd = t; fellNow = ffEnd - ffStart >= FREEFALL_MS;
-        } else {
-            if (ffStart >= 0) {
-                if (ffEnd - ffStart >= FREEFALL_MS) { ffOver = true; ffDone = ffEnd; }
-                ffStart = -1;
-            }
-            if (ffDone >= 0) {
-                if (m > LAND_A) { landT = t; ffDone = -1; }
-                else if (t - ffDone > LAND_WINDOW_MS) ffDone = -1;
-            }
-        }
         // baseline only follows calm signal, so a long hang or a rep does not drag it
         double clipped = Math.max(base - 3, Math.min(base + 3, m));
         base += (clipped - base) * dt / BASE_TAU;
@@ -121,7 +103,7 @@ final class PullupCounter {
         }
         calmRef = hi - lo;
         // a slow rep's steady middle looks still too, so inside UP/DOWN it takes twice as long
-        // still for 1 s with |a| on the baseline, or for 1.5 s with |a| anywhere (the baseline may be off after a jump or a
+        // still for 1 s with |a| on the baseline, or for 1.5 s with |a| anywhere (the baseline may be off after a hang or a
         // swing, and then nothing would ever look "on the baseline" again: that froze v and lost the first rep of a real set)
         boolean stillCore = hi - lo < 2 * CALM_BAND && t - oldest >= CALM_MS - 60;
         if (!stillCore) calmSince = t;   // calmSince = when the last CALM_MS window first looked still
@@ -135,9 +117,6 @@ final class PullupCounter {
         v -= v * dt / VEL_TAU;
         if (calm) v -= v * Math.min(1.0, dt / 0.1);
         if (v > V_CLAMP) v = V_CLAMP; else if (v < -V_CLAMP) v = -V_CLAMP;
-        // end of a flight: jumping up you grab the bar at the apex (v = 0 there); the jump's push-off is not a rise
-        if (ffOver && phase != Phase.DOWN) { v = 0; sm = 0; phase = Phase.WAIT; riseDisp = fallDisp = 0; }
-
         // distance moved since v last changed sign, so a phase starts with the part before v crossed the threshold
         if (v > 0) { riseDisp += v * dt; fallDisp = 0; } else { fallDisp -= v * dt; riseDisp = 0; }
         double thr = vThr();
@@ -158,11 +137,6 @@ final class PullupCounter {
             case DOWN:
                 if (v < 0) dnDisp -= v * dt;
                 if (v < dnPeak) dnPeak = v;
-                if (fellNow) {   // let go of the bar while lowering: the rep is done, the fall is not a new one
-                    if (dnDisp >= DISP_MIN) rep = countRep(t);
-                    phase = Phase.WAIT;
-                    break;
-                }
                 if (dnDisp >= DISP_MIN && v > DOWN_EXIT * dnPeak) {   // lowered far enough and the lowering has (nearly) stopped
                     rep = countRep(t);
                     phase = v > thr ? Phase.UP : Phase.WAIT;
@@ -172,11 +146,10 @@ final class PullupCounter {
                 }
                 break;
         }
-        if (debug != null && (t % 50 == 0 || was != phase || (System.getenv("PU_ALL") != null))) debug.append(String.format(java.util.Locale.ROOT, "%d m=%.2f av=%.2f v=%.3f %s up=%.2f dn=%.2f lp2=%.2f ref=%.2f cs=%d base=%.2f thr=%.3f calm=%d ff=%d land=%d%s%n", t, m, sm, v, phase, upDisp, dnDisp, lp2, calmRef, calmSince, base, thr, calm?1:0, fellNow?1:0, landT, rep ? " REP" : ""));
+        if (debug != null && (t % 50 == 0 || was != phase || (System.getenv("PU_ALL") != null))) debug.append(String.format(java.util.Locale.ROOT, "%d m=%.2f av=%.2f v=%.3f %s up=%.2f dn=%.2f lp2=%.2f ref=%.2f cs=%d base=%.2f thr=%.3f calm=%d%s%n", t, m, sm, v, phase, upDisp, dnDisp, lp2, calmRef, calmSince, base, thr, calm?1:0, rep ? " REP" : ""));
         // closing
         if (counting && closeReason == null) {
-            if (reps > 0 && landT >= 0 && landT > lastRepT() - 300 && t - landT >= LAND_CLOSE_MS) close("landed", t);
-            else if (reps > 0 && t - lastRepT() >= IDLE_CLOSE_MS) close("idle", t);
+            if (reps > 0 && t - lastRepT() >= IDLE_CLOSE_MS) close("idle", t);
             else if (reps == 0 && t - goT >= EMPTY_CLOSE_MS) close("empty", t);
         }
         return rep;
@@ -184,7 +157,6 @@ final class PullupCounter {
 
     private boolean countRep(long t) {
         if (!counting) return false;
-        if (landT >= 0 && t - landT < LAND_MUTE_MS) return false;    // the landing bounce is not a rep
         if (!repT.isEmpty() && t - lastRepT() < MIN_REP_MS) return false;
         reps++; repT.add(t);
         peaks.add(Math.min(upPeak, -dnPeak));
@@ -192,7 +164,7 @@ final class PullupCounter {
     }
 
     private void close(String why, long t) { closeReason = why; closeAt = t; }
-    /** non-null once the set should be closed: "landed", "idle" or "empty" */
+    /** non-null once the set should be closed: "idle" or "empty" */
     String closeReason() { return closeReason; }
     long closeAt() { return closeAt; }
 }

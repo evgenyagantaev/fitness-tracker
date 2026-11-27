@@ -13,8 +13,8 @@ public class PullupSweepTest {
                 for (int seed = 0; seed < seeds; seed++) {
                     Random r = new Random(n * 100 + seed + (mount.equals("neck") ? 7777 : 0) + 31 * seeds);
                     PullupCounterTest.Trace tr = PullupCounterTest.fullSet(n, r, seed % 2 == 0);
-                    double setEnd = tr.end() - 25;
-                    PullupCounter c = PullupCounterTest.run(tr, mount, r, 3.0, 3.0, 6.0, new double[] { setEnd + 3.5, setEnd + 25 }, null);
+                    double setEnd = tr.end() - 20;
+                    PullupCounter c = PullupCounterTest.run(tr, mount, r, 3.0, 3.0, 6.0, new double[] { setEnd + 10.0, setEnd + 20 }, null);
                     int e = Math.abs(c.reps() - n); err += e; worst = Math.max(worst, e);
                     if (e > 0 && fails != null) fails.append(mount + " n=" + n + " seed=" + seed + " got " + c.reps() + "; ");
                 }
@@ -24,13 +24,13 @@ public class PullupSweepTest {
                 PullupCounterTest.Trace tr = new PullupCounterTest.Trace(); tr.hold(60);
                 fp += PullupCounterTest.run(tr, mount, r, 1.0, 2.0, 58.0, null, null).reps();
                 // slow reps
-                r = new Random(900 + seed); tr = new PullupCounterTest.Trace(); tr.hold(2); tr.jumpToBar(); tr.hold(1);
+                r = new Random(900 + seed); tr = new PullupCounterTest.Trace(); tr.hold(2); tr.hangOnBar(); tr.hold(1);
                 for (int i = 0; i < 6; i++) { tr.move(0.42, 2.0 + 0.3 * r.nextDouble()); tr.hold(0.6); tr.move(-0.42, 2.3 + 0.3 * r.nextDouble()); tr.hold(0.8); }
-                tr.dropAndLand(0.35, 0.09); tr.hold(6);
+                tr.stepDown(); tr.hold(12);
                 int e = Math.abs(PullupCounterTest.run(tr, mount, r, 1.0, -1, -1, null, null).reps() - 6); err += e; worst = Math.max(worst, e);
                 if (e > 0 && fails != null) fails.append(mount + " slow seed=" + seed + "; ");
                 // shrugs
-                r = new Random(700 + seed); tr = new PullupCounterTest.Trace(); tr.hold(2); tr.jumpToBar(); tr.hold(1);
+                r = new Random(700 + seed); tr = new PullupCounterTest.Trace(); tr.hold(2); tr.hangOnBar(); tr.hold(1);
                 for (int i = 0; i < 4; i++) { tr.move(0.08, 0.5); tr.move(-0.08, 0.5); tr.hold(0.5); }
                 tr.hold(20);
                 fp += PullupCounterTest.run(tr, mount, r, 1.0, -1, -1, null, null).reps();
