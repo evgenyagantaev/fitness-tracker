@@ -240,6 +240,7 @@ final class VoiceSpeaker {
             acquirePlayWakeLock();
             requestFocus();
             Log.i(TAG, "say[" + kindTag(it) + ",clips=" + clips.size() + "]: " + it.text);
+            EventLog.add("voice start " + kindTag(it) + " key=" + it.key + " waited=" + (now - it.at) + "ms via=clips");
             clipPlayer.playAsync(clips, attrs, () -> h.post(() -> finished(id)), () -> h.post(() -> fallbackTts(it, id)));
             return;
         }
@@ -272,6 +273,7 @@ final class VoiceSpeaker {
 
     private void speakTts(VoiceQueue.Item it, String id) {
         Bundle p = new Bundle();
+        EventLog.add("voice start " + kindTag(it) + " key=" + it.key + " waited=" + (SystemClock.elapsedRealtime() - it.at) + "ms via=tts");
         int r = tts.speak(it.text, TextToSpeech.QUEUE_FLUSH, p, id);
         Log.i(TAG, "say[" + kindTag(it) + ",tts]: " + it.text + (r == TextToSpeech.SUCCESS ? "" : " (speak()=" + r + ")"));
         if (r != TextToSpeech.SUCCESS) finished(id);
@@ -280,6 +282,7 @@ final class VoiceSpeaker {
     private void finished(String id) {
         if (current == null) return;
         if (id != null && !id.equals(currentId)) return;
+        EventLog.add("voice end key=" + (current.key) + " took=" + (SystemClock.elapsedRealtime() - currentSince) + "ms");
         current = null;
         currentId = null;
         releasePlayWakeLock();

@@ -257,7 +257,8 @@
         const endedAt = o.autoEnd.endedAt, dur = Math.max(1, Math.round((endedAt - o.startedAt) / 1000));
         const samples = o.samples || [], ss = o.stepSeries || [], tr = o.track || [];
         const stride = (a && a.stride_m) || o.stride || 0.8;
-        const an = A.analyze({ type: o.type, duration_s: dur, steps: o.steps || 0, stride_m: stride, step_series: ss, track: tr });
+        const pp = Array.isArray(o.phonePauses) ? o.phonePauses.map((x) => [x[0], x[1]]) : undefined;
+        const an = A.analyze({ type: o.type, duration_s: dur, steps: o.steps || 0, stride_m: stride, step_series: ss, track: tr, phone_pauses: pp });
         const hrs = samples.map((x) => x[1]).filter((b) => b >= 30);
         const w = { id: o.workoutId, type: o.type || 'run', date: (a && a.date) || localDate(new Date(o.startedAt)), started_at: o.startedAt, ended_at: endedAt, duration_s: dur,
           steps: an.steps, stride_m: stride, stride_source: (a && a.stride_source) || 'auto', distance_m: an.distance_m,
@@ -268,6 +269,8 @@
           step_series: ss, track: tr, segments: an.segments,
           auto_end: { reason: o.autoEnd.reason, detected_at: o.autoEnd.detectedAt, last_run_s: o.autoEnd.lastRunSec } };
         if (o.tail && ((o.tail.step_series || []).length || (o.tail.track || []).length)) w.tail = o.tail;
+        if (pp) w.phone_pauses = pp;
+        if (Array.isArray(o.liveLog) && o.liveLog.length) w.live_log = o.liveLog.slice(-400);
         Object.assign(w, derived(w));
         if (a) { active = null; persistActive(); if (!(svc && svc.running)) { clearInterval(tickTimer); } }
         Store.putWorkout(w);
@@ -416,6 +419,8 @@
     app('step_series', st.stepSeries, st.sinceSteps);
     app('track', st.track, st.sinceTrack);
     if (typeof st.steps === 'number') active.steps = Math.max(active.steps || 0, st.steps);
+    if (Array.isArray(st.phonePauses)) active.phone_pauses = st.phonePauses;   // v1.16: the pauses the phone itself detected live
+    if (Array.isArray(st.liveLog)) active.live_log = st.liveLog;
     active.gps_live = { status: st.gpsStatus, dist: st.gpsDist, acc: st.gpsAcc, at: st.gpsAt };
   }
 
@@ -482,6 +487,8 @@
         if (res && Array.isArray(res.stepSeries) && res.stepSeries.length >= (active.step_series || []).length) active.step_series = res.stepSeries;
         if (res && Array.isArray(res.track) && res.track.length >= (active.track || []).length) active.track = res.track;
         if (res && typeof res.steps === 'number') active.steps = Math.max(active.steps || 0, res.steps);
+        if (res && Array.isArray(res.phonePauses)) active.phone_pauses = res.phonePauses;
+        if (res && Array.isArray(res.liveLog)) active.live_log = res.liveLog;
         if (res && res.deviceName) active.device = res.deviceName;
         if (res && res.sessionStart) stopRes = res;
       } catch (e) { /* keep what we have */ }
@@ -493,13 +500,15 @@
     if (P.KeepAwake) P.KeepAwake.allowSleep().catch(() => {});
     clearInterval(tickTimer);
     const a = active, s = summary(a);
-    const an = A.analyze({ type: a.type, duration_s: s.duration_s, steps: a.steps || 0, stride_m: a.stride_m, step_series: a.step_series || [], track: a.track || [] });
+    const an = A.analyze({ type: a.type, duration_s: s.duration_s, steps: a.steps || 0, stride_m: a.stride_m, step_series: a.step_series || [], track: a.track || [], phone_pauses: a.phone_pauses });
     const w = { id: a.id, type: a.type, date: a.date, started_at: a.started_at, ended_at: Date.now(), duration_s: s.duration_s,
       steps: an.steps, stride_m: a.stride_m, stride_source: a.stride_source || 'manual', distance_m: an.distance_m, hr: s.hr, samples: a.samples,
       device: a.device || hr.name || null, deleted: false,
       step_distance_m: an.step_distance_m, moving_s: an.moving_s, stop_s: an.stop_s, stops: an.stops, cadence_avg: an.cadence_avg,
       gps_distance_m: an.gps_distance_m, gps_ok: an.gps_ok, gps_acc: an.gps_acc, gps_coverage: an.gps_coverage, gps_stride_m: an.gps_stride_m,
       step_series: a.step_series || [], track: a.track || [], segments: an.segments };
+    if (Array.isArray(a.phone_pauses)) w.phone_pauses = a.phone_pauses.map((x) => [x[0], x[1]]);
+    if (Array.isArray(a.live_log) && a.live_log.length) w.live_log = a.live_log.slice(-400);
     if (stopRes && Array.isArray(stopRes.sess)) {   // HR before the start + during the run (recovery is added later)
       const prev = (stopRes.sessWorkouts || []).filter((x) => x.id !== w.id).pop();
       const lo = prev ? prev.endedAt : stopRes.sessionStart, end = stopRes.workoutEndedAt || w.ended_at;

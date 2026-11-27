@@ -234,6 +234,10 @@ class Workout(BaseModel):
     motion: list[tuple[float, int | None, float | None]] = Field(default=[], max_length=50_000)
     tail: dict[str, Any] | None = Field(default=None, max_length=10)   # raw steps/track recorded after an automatic end
     auto_end: dict[str, Any] | None = Field(default=None, max_length=10)
+    # v1.16: the pauses the phone's live detector saw ([start_s, end_s] since «Старт»; when present they are the run's stops) and its
+    # decision log (timestamps of pause/resume decisions, strap data staleness and voice queue timings; no coordinates)
+    phone_pauses: list[tuple[float, float]] | None = Field(default=None, max_length=500)
+    live_log: list[Annotated[str, Field(max_length=300)]] | None = Field(default=None, max_length=600)
     updated_at: int = Field(ge=0)
     deleted: bool = False
 

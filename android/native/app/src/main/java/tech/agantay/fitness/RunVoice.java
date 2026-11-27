@@ -42,6 +42,8 @@ final class RunVoice {
     private int runStreak = 0, nonRun = 0, stillStreak = 0, moveStreak = 0, pausedFor = 0, noGpsFor = 0, lockStreak = 0;
     private int pauseStartSec = -1, lastEventTl = -1, lastEventArrival = -1;
     private int strapStill = 0, strapWalk = 0, strapLastRun = -1;
+    private int strapLastStep = -1, strapPrevCount = -1;   // last second in which the strap's step count grew (diagnostics)
+    private boolean strapWasLive = false;
     boolean strapLive = false; double strapCadNow = Double.NaN;
     private final boolean[] armed;
     private final int[] thresholds;
@@ -97,6 +99,8 @@ final class RunVoice {
         return (s1 - s0) * 60.0 / (t1 - t0);
     }
 
+    private static String fmt(double v) { return Double.isNaN(v) ? "NaN" : String.format(java.util.Locale.ROOT, "%.1f", v); }
+
     static boolean isRunning(double cad, double spd) {
         boolean hc = !Double.isNaN(cad), hs = !Double.isNaN(spd);
         if (!hc && !hs) return false;
@@ -141,6 +145,12 @@ final class RunVoice {
         return Math.max(0, Math.min(sec, start));
     }
 
+    /** v1.16: every pause the phone detected live, for the saved record: the closed spans plus a pause still open at `nowSec` (closed at nowSec). */
+    int[][] allPauseSpans(int nowSec) {
+        ArrayList<int[]> l = new ArrayList<>(pauseSpans);
+        if (state == S.PAUSE && spanStart >= 0) l.add(new int[] { spanStart, Math.max(spanStart, nowSec) });
+        return l.toArray(new int[0][]);
+    }
     /** Closed pause spans [start, end] (start is the real stop, end is already unshifted by the resume streak). */
     int[][] pauseSpans() {
         int[][] a = new int[pauseSpans.size()][];
@@ -194,6 +204,15 @@ final class RunVoice {
         double sc3 = strapCad(strap, sec, 3), sc4 = strapCad(strap, sec, 4), sc8 = strapCad(strap, sec, 8);
         strapLive = !Double.isNaN(sc4);
         strapCadNow = strapLive ? strapCad(strap, sec, 30) : Double.NaN;
+        if (strap != null && !strap.isEmpty()) {   // diagnostics: when did the strap last count a step, and did its feed go stale
+            int cnt = strap.get(strap.size() - 1)[1];
+            if (strapPrevCount >= 0 && cnt > strapPrevCount) strapLastStep = sec;
+            strapPrevCount = cnt;
+        }
+        if (state != S.IDLE && strapLive != strapWasLive) {
+            EventLog.add(strapLive ? "strap live again" : "strap feed stale (no strap point for >" + STRAP_LIVE_S + " s) state=" + state);
+        }
+        strapWasLive = strapLive;
         double[] last = hist.isEmpty() ? null : hist.get(hist.size() - 1);
         // seconds of actual running inside the run (the live pace is distance over these seconds only)
         boolean mv = strapLive ? state == S.RUN && sc4 >= STRAP_WALK_CAD
@@ -228,6 +247,7 @@ final class RunVoice {
             case IDLE: case WALK:
                 runStreak = runLike ? runStreak + 1 : 0;
                 if (runStreak >= (state == S.WALK && strapLive ? STRAP_WALK_RESUME_S : START_STREAK_S)) {
+                    EventLog.add((state == S.IDLE ? "run start" : "run again after WALK") + " sc8=" + fmt(sc8) + " strapLive=" + strapLive);
                     if (state == S.IDLE) {
                         state = S.RUN; runStartSec = Math.max(0, sec - START_STREAK_S); runClock = Math.min(sec, START_STREAK_S);
                         runStartGps = distAt(runStartSec, 1); runStartSteps = distAt(runStartSec, 2);
@@ -257,6 +277,9 @@ final class RunVoice {
                     pause = (stillStreak >= PAUSE_STILL_S && (!phoneRan || stillStreak >= GPS_PAUSE_MAX_WAIT_S)) || stepStill;
                 }
                 if (pause) {
+                    String cause = strapLive ? (strapStill >= STRAP_STILL_S ? "strap-still " + strapStill + "s" : "strap-walk-cadence " + strapWalk + "s") : stepStill ? "phone-steps-stale" : "gps-still " + stillStreak + "s";
+                    EventLog.add("PAUSE decided: " + cause + " lastStrapStep=" + (strapLastStep >= 0 ? (sec - strapLastStep) + "s ago" : "n/a") + " sc3=" + fmt(sc3) + " sc8=" + fmt(sc8)
+                        + " gpsSpd5=" + fmt(spd5) + " strapLive=" + strapLive);
                     state = S.PAUSE; pauses++; pauseStartSec = sec;
                     // the phrase is queued at detection time (it cannot be earlier); the stored span starts at the real stop
                     int fallback = Math.max(0, sec - PAUSE_STILL_S - PAUSE_SPD_WIN);
@@ -265,7 +288,7 @@ final class RunVoice {
                     strapStill = 0; strapWalk = 0;
                     pausedFor = 0; moveStreak = 0; stillStreak = 0;
                     if (cfg.events) q.offer(RunPhrases.paused(), VoiceQueue.EVENT, "pause", nowMs, TTL_EVENT_MS);
-                } else if (nonRun >= WALK_AFTER_S) { state = S.WALK; runStreak = 0; }
+                } else if (nonRun >= WALK_AFTER_S) { EventLog.add("RUN -> WALK (" + nonRun + "s not running)"); state = S.WALK; runStreak = 0; }
                 break;
             }
             case PAUSE: {
@@ -277,10 +300,15 @@ final class RunVoice {
                 else { moving = noGpsFor >= 3 && lastEventArrival > pauseStartSec && !Double.isNaN(cad20) && cad20 >= 100; need = 1; }
                 moveStreak = moving ? moveStreak + 1 : 0;
                 if (moveStreak >= need) {
-                    pauseSpans.add(new int[] { spanStart, sec - moveStreak }); if (pauseSpans.size() > 20) pauseSpans.remove(0);
+                    EventLog.add("RESUME decided: moving " + moveStreak + "s sc3=" + fmt(sc3) + " strapLive=" + strapLive + " after " + pausedFor + "s");
+                    pauseSpans.add(new int[] { spanStart, Math.max(spanStart, sec - moveStreak) }); if (pauseSpans.size() > 200) pauseSpans.remove(0);
                     state = S.RUN; nonRun = 0; stillStreak = 0; lastRunLikeSec = sec; strapStill = 0; strapWalk = 0;
                     if (cfg.events) q.offer(RunPhrases.resumed(), VoiceQueue.EVENT, "resume", nowMs, TTL_EVENT_MS);
-                } else if (pausedFor >= PAUSE_WALK_S) { state = S.WALK; runStreak = 0; }
+                } else if (pausedFor >= PAUSE_WALK_S) {
+                    pauseSpans.add(new int[] { spanStart, sec }); if (pauseSpans.size() > 200) pauseSpans.remove(0);   // a pause that turned into walking is still a pause
+                    EventLog.add("PAUSE -> WALK after " + pausedFor + "s");
+                    state = S.WALK; runStreak = 0;
+                }
                 break;
             }
         }

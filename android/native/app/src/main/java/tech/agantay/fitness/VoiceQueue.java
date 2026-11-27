@@ -31,10 +31,11 @@ final class VoiceQueue {
 
     synchronized void offer(String text, int kind, String key, long now, long ttlMs) {
         if (text == null || text.isEmpty()) return;
+        EventLog.add("voice offer " + (kind == REGULAR ? "R" : kind == FINAL ? "F" : "E") + " key=" + key + " queued=" + q.size() + (speaking != null ? " (busy: " + speaking.key + ")" : ""));
         if (kind == FINAL) { dropped += q.size(); q.clear(); q.add(new Item(text, kind, key, now, Long.MAX_VALUE / 4)); return; }
         if ("pause".equals(key) || "resume".equals(key)) {
             String other = "pause".equals(key) ? "resume" : "pause";
-            for (Iterator<Item> it = q.iterator(); it.hasNext(); ) if (other.equals(it.next().key)) { it.remove(); dropped += 2; return; }
+            for (Iterator<Item> it = q.iterator(); it.hasNext(); ) if (other.equals(it.next().key)) { it.remove(); dropped += 2; EventLog.add("voice cancel pause/resume pair (both still waiting)"); return; }
         }
         if (key != null) for (Iterator<Item> it = q.iterator(); it.hasNext(); ) if (key.equals(it.next().key)) { it.remove(); dropped++; }
         q.add(new Item(text, kind, key, now, ttlMs));
@@ -43,7 +44,7 @@ final class VoiceQueue {
     /** the item to speak right now, or null (then try again later); the caller must call started() / done() */
     synchronized Item next(long now) {
         if (speaking != null) return null;
-        for (Iterator<Item> it = q.iterator(); it.hasNext(); ) { Item i = it.next(); if (now - i.at > i.ttlMs) { it.remove(); dropped++; } }
+        for (Iterator<Item> it = q.iterator(); it.hasNext(); ) { Item i = it.next(); if (now - i.at > i.ttlMs) { it.remove(); dropped++; EventLog.add("voice DROPPED (too old) key=" + i.key + " waited=" + (now - i.at) + "ms"); } }
         Item best = null;
         for (Item i : q) if (ready(i, now) && (best == null || rank(i) > rank(best))) best = i;   // FIFO inside a class
         if (best == null) return null;

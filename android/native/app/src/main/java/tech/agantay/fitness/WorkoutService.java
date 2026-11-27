@@ -167,7 +167,7 @@ public class WorkoutService extends Service implements SensorEventListener {
             startSteps();   // whole HR session: the counter is warm at «Старт», so the first steps are not lost
             if (workoutActive) startGps();
             if (workoutActive && deviceId == null) handler.post(() -> startAcc(false, 0));   // beltless run resumed after the process died
-            if (workoutActive) startVoice(false);
+            if (workoutActive) { EventLog.ensure(startedAt); EventLog.add("service resumed after the process died: the voice state starts again (earlier pauses of this run are not in the live list)"); startVoice(false); }
             connectHr();
             handler.post(ticker);
         } else if (beganWorkout) {
@@ -190,6 +190,9 @@ public class WorkoutService extends Service implements SensorEventListener {
         stepBase = stepTotal >= 0 ? stepTotal : -1;
         stepSeries.clear(); strapSeries.clear(); track.clear(); gpsDist = 0; gpsAnchor = null; gpsAcc = 0; gpsSpeed = 0; gpsAt = 0; gpsSpeedAt = 0; recent.clear();
         workoutActive = true; phase = "workout"; workoutEnd = 0;
+        EventLog.reset(startedAt);
+        lastVoiceTickAt = 0; accStaleLogged = false;
+        EventLog.add("workout start type=" + type + " strap=" + (deviceId != null) + " gps=" + useGps);
         startVoice(true);
         if (scaleScan != null) scaleScan.stop();
         handler.post(() -> startAcc(false, 0));
@@ -395,11 +398,16 @@ public class WorkoutService extends Service implements SensorEventListener {
         if (runVoice != null) VoiceSpeaker.get(this).q.clear();
         runVoice = null;
     }
+    private long lastVoiceTickAt = 0; private boolean accStaleLogged = false;
     private void voiceTick() {
         RunVoice rv = runVoice;
         if (rv != null && workoutActive) {
             synchronized (this) {
                 long now = System.currentTimeMillis();
+                if (lastVoiceTickAt > 0 && now - lastVoiceTickAt > 2500) EventLog.add("service tick gap " + (now - lastVoiceTickAt) + " ms (the service was not running every second)");
+                lastVoiceTickAt = now;
+                { AccRecorder a0 = acc; boolean stale = a0 != null && !a0.test && "h10".equals(a0.source) && !("recording".equals(accStatus) && now - accDataAt <= 3000);
+                  if (stale != accStaleLogged) { accStaleLogged = stale; EventLog.add(stale ? "strap acc data stale: status=" + accStatus + " last data " + (accDataAt > 0 ? (now - accDataAt) + " ms ago" : "never") : "strap acc data flowing again"); } }
                 int sec = (int) ((now - startedAt) / 1000);
                 boolean gpsOk = "ok".equals(gpsStatus) && gpsDist > 50;
                 double spd = gpsSpeedAt > 0 && now - gpsSpeedAt <= 3000 ? gpsSpeed : Double.NaN;
@@ -1134,6 +1142,13 @@ public class WorkoutService extends Service implements SensorEventListener {
             o.put("ecgCapable", ecgCapable);
             o.put("accStatus", accStatus);
             o.put("voice", runVoice != null ? VoiceSpeaker.get(this).status : null);
+            // v1.16: the pauses the live detector saw (the app stores them as the run's stops) and its decision log
+            if (runVoice != null && workoutActive && runVoice.ran()) {
+                JSONArray pp = new JSONArray();
+                for (int[] sp : runVoice.allPauseSpans((int) ((System.currentTimeMillis() - startedAt) / 1000))) pp.put(new JSONArray().put(sp[0]).put(sp[1]));
+                o.put("phonePauses", pp);
+            }
+            if (workoutActive) o.put("liveLog", new JSONArray(EventLog.snapshot()));
             o.put("accSamples", acc != null ? acc.samples : 0);
             o.put("accSteps", acc != null ? acc.steps : 0);
             o.put("accId", acc != null ? acc.id : null);
@@ -1225,6 +1240,7 @@ public class WorkoutService extends Service implements SensorEventListener {
         boolean end;
         synchronized (this) {
             long now = System.currentTimeMillis();
+            if (workoutActive) EventLog.add("workout stop");
             o = state(0);
             if (workoutActive) {
                 try { sessWorkouts.put(new JSONObject().put("id", workoutId).put("startedAt", startedAt).put("endedAt", now)); } catch (Exception ignored) {}

@@ -49,7 +49,8 @@ await ctx.addInitScript(({ url, token }) => {
           steps: n * 3, bpm: 130 + (n % 20), bpmAt: Date.now(), hrStatus: s.deviceId ? 'connected' : 'none', sampleCount: n, samples: samples.slice(since || 0), since: since || 0,
           stepSeries: Array.from({ length: n }, (_, i) => [i + 1, (i + 1) * 3]).slice(o2.sinceSteps || 0), sinceSteps: o2.sinceSteps || 0,
           track: Array.from({ length: n }, (_, i) => [i + 1, 55.0 + (i + 1) * 3 / 111195, 37.0, 5]).slice(o2.sinceTrack || 0), sinceTrack: o2.sinceTrack || 0,
-          gps: s.gps !== false, gpsStatus: 'ok', gpsDist: n * 3, gpsAcc: 5, gpsAt: Date.now() }; };
+          gps: s.gps !== false, gpsStatus: 'ok', gpsDist: n * 3, gpsAcc: 5, gpsAt: Date.now(),
+          phonePauses: n >= 6 ? [[2, 4]] : [], ...(since === 0 ? { liveLog: ['0.0 workout start type=run strap=true gps=true', '3.1 PAUSE decided: strap-still 3s lastStrapStep=3s ago sc3=0.0 sc8=45.0 gpsSpd5=NaN strapLive=true'] } : {}) }; };
       return {
         async start(o) { log('start'); window.__startOpts = o; if (!o.resume) put({ running: true, ...o }); return { started: true, steps: true, location: true }; },
         async getState(o) { window.__lastGet = o; return snap(o && o.since, o || {}); },
@@ -105,9 +106,11 @@ await page.waitForFunction(() => JSON.parse(localStorage['ft.wdirty'] || '[1]').
 const list = await fetch(SERVER + 'api/workouts', { headers: { Authorization: 'Bearer ' + TOKEN } }).then((r) => r.json());
 const w = list[0];
 ok(w && w.duration_s >= 8 && w.steps >= 24 && w.hr.max >= 130, `synced: ${w.duration_s}s, ${w.steps} steps, ${w.distance_m} m, HR avg ${w.hr.avg} max ${w.hr.max}, device ${w.device}`);
-ok(w.gps_distance_m >= 15 && w.moving_s > 0 && w.step_distance_m === Math.round((w.steps + (w.steps_start_missed || 0)) * 0.75), `analytics saved: gps ${w.gps_distance_m} m, moving ${w.moving_s}s, stops ${w.stops}, cadence ${w.cadence_avg}`);
+ok(w.gps_distance_m >= 8 && w.moving_s > 0 && w.step_distance_m <= Math.round((w.steps + (w.steps_start_missed || 0)) * 0.75) && w.step_distance_m >= 0.6 * Math.round((w.steps + (w.steps_start_missed || 0)) * 0.75), `analytics saved: gps ${w.gps_distance_m} m, moving ${w.moving_s}s, stops ${w.stops}, cadence ${w.cadence_avg}`);
 const full = await fetch(SERVER + 'api/workouts/' + w.id, { headers: { Authorization: 'Bearer ' + TOKEN } }).then((r) => r.json());
 ok(full.track.length >= 8 && full.step_series.length >= 8, `track ${full.track.length} pts, step series ${full.step_series.length} pts stored`);
+ok(JSON.stringify(full.phone_pauses) === '[[2,4]]' && full.stops === 1 && full.seg.pauses_src === 'phone', `phone pauses are the run's stops: ${JSON.stringify(full.phone_pauses)} stops=${full.stops} src=${full.seg.pauses_src}`);
+ok(Array.isArray(full.live_log) && full.live_log.some((l) => l.includes('PAUSE decided')), 'on-device decision log stored with the workout: ' + (full.live_log || []).length + ' lines');
 ok(full.samples.length >= 8 && new Set(full.samples.map((s) => s[0])).size === full.samples.length, `samples complete & unique: ${full.samples.length}`);
 await browser.close();
 console.log(process.exitCode ? 'BG MOCK FAILED' : 'BG MOCK PASSED');

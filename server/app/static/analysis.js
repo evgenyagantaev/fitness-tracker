@@ -311,7 +311,10 @@
     out.approach_s = Math.round(out.t0); out.cooldown_s = Math.round(Math.max(0, duration - out.t1));
     // manual pauses always win: the auto detector (and the 15 s start back-shift) must not move them
     if (Array.isArray(w.pause_override)) out.pauses = applyPauseOverride(w.pause_override, out.t0, out.t1);
-    else out.pauses = findPauses(series, duration, gps, motion, S, out.t0, out.t1);
+    else if (Array.isArray(w.phone_pauses)) {
+      // v1.16: every pause the phone's live detector saw (strap steps / GPS), clipped to the run; the run's own start/end trim above is unchanged
+      out.pauses = applyPauseOverride(w.phone_pauses, out.t0, out.t1); out.pauses_src = 'phone';
+    } else out.pauses = findPauses(series, duration, gps, motion, S, out.t0, out.t1);
     return out;
   }
   /** Clip, order and merge a user-supplied pause list; empty means «no pauses». */
@@ -454,6 +457,7 @@
       : gps_ok && steps_run >= 100 ? Math.round(gps_distance_m / steps_run * 1000) / 1000 : null;
     const seg_out = { v: seg.v, src: seg.src, conf: seg.conf, t0: R0, t1: R1, approach_s: seg.approach_s, cooldown_s: seg.cooldown_s, pauses: stops,
       run_s: Math.round(runLen), moving_s, steps_run, steps_total: steps, gps_run_m: gps_distance_m, gps_total_m, cad_src: seg.cad_src || 'steps' };
+    if (seg.pauses_src) seg_out.pauses_src = seg.pauses_src;
     return { duration_s: Math.round(duration), moving_s, stop_s, stops: stops.length, stop_list: stops, step_distance_m, steps, steps_run,
       gps_distance_m, gps_total_m, gps_ok, gps_acc, gps_coverage: Math.round(coverage * 100) / 100, gps_stride_m, seg: seg_out,
       distance_m, cadence_avg, segments, cadence, lag_s, steps_start_missed, steps_start_src, steps_adj, step_distance_adj_m, cal_steps, cal_gps_m,

@@ -308,4 +308,30 @@ public class RunVoiceTest {
         int start = RunVoice.truePauseStart(hist, 78, 78 - 10);
         assertTrue("start after last running mean, ignoring the spike: " + start, start >= 58 && start <= 62);
     }
+
+    // ---------- v1.16: every live pause is kept for the record + the decision log ----------
+    @Test public void shortStopAndAnOpenPauseAreBothInTheSpanList() {
+        // strap steps: run, 7 s stop at 300, run again, stop for good at 600
+        Sim s = new Sim(new Seg(0, 20, 100, 1.3), new Seg(20, 300, 165, 2.8), new Seg(300, 307, 0, 0), new Seg(307, 600, 165, 2.8), new Seg(600, 700, 0, 0));
+        s.acc = true; s.run(650);
+        int[][] closed = s.rv.pauseSpans();
+        assertEquals("the 7 s stop is a pause too (the 10 s step-batch gap of the old segmenter dropped it)", 1, closed.length);
+        assertTrue("starts at the real stop: " + closed[0][0], closed[0][0] >= 299 && closed[0][0] <= 304);
+        int[][] all = s.rv.allPauseSpans(650);
+        assertEquals("closed + the pause still open at the end", 2, all.length);
+        assertTrue("open pause starts where the steps ended: " + all[1][0], all[1][0] >= 599 && all[1][0] <= 604);
+        assertEquals(650, all[1][1]);
+        boolean pauseLogged = false;
+        for (String l : EventLog.snapshot()) if (l.contains("PAUSE decided: strap-still")) pauseLogged = true;
+        assertTrue("the decision is logged with its cause", pauseLogged);
+    }
+    @Test public void aPauseThatTurnsIntoWalkingIsStillRecorded() {
+        Sim s = new Sim(new Seg(0, 20, 100, 1.3), new Seg(20, 300, 165, 2.8), new Seg(300, 500, 0, 0));
+        s.acc = true; s.run(500);
+        int[][] closed = s.rv.pauseSpans();
+        assertEquals(1, closed.length);
+        assertTrue(closed[0][0] >= 299 && closed[0][0] <= 304);
+        assertTrue("closed when it became WALK (~120 s)", closed[0][1] >= 415 && closed[0][1] <= 430);
+        assertEquals("no extra open span in WALK", 1, s.rv.allPauseSpans(500).length);
+    }
 }

@@ -23,6 +23,24 @@ function build(profile, duration, { gps = true, motion = false, lagFirst = 15 } 
 }
 const APPROACH = [0, 100, 100, 1.3], RUN1 = [100, 300, 165, 2.8], DOG = [300, 318, 0, 0], RUN2 = [318, 700, 165, 2.8], COOL = [700, 800, 100, 1.3];
 
+// 0. v1.16: the pauses the phone saw live are the run's stops (every one, even 7 s); the run's start/end trim is unchanged
+{
+  const w = build([APPROACH, RUN1, DOG, RUN2, COOL], 800);
+  const auto = A.analyze(w).seg;
+  const ph = Object.assign({}, w, { phone_pauses: [[301, 318], [450, 457], [720, 780]] });   // the last one is in the cool-down
+  const a = A.analyze(ph), s = a.seg;
+  ok(s.pauses_src === 'phone', 'phone pauses used');
+  ok(s.pauses.length === 2 && s.pauses[1][0] === 450 && s.pauses[1][1] === 457, `short 7 s pause kept, cool-down one clipped (${JSON.stringify(s.pauses)})`);
+  ok(s.t0 === auto.t0 && s.t1 === auto.t1, 'run start/end trim unchanged');
+  ok(a.stops === 2 && a.stop_s === 17 + 7, `stops=${a.stops} stop_s=${a.stop_s}`);
+  const none = A.analyze(Object.assign({}, w, { phone_pauses: [] })).seg;
+  ok(none.pauses.length === 0 && none.pauses_src === 'phone', 'phone saw no pauses: none');
+  const old = A.analyze(w).seg;
+  ok(old.pauses_src === undefined && old.pauses.length === 1, 'no phone pauses (old run): the segmenter decides as before');
+  const ovr = A.analyze(Object.assign({}, w, { phone_pauses: [[450, 457]], pause_override: [[500, 520]] })).seg;
+  ok(ovr.pauses.length === 1 && ovr.pauses[0][0] === 500 && ovr.pauses_src === undefined, 'manual pause_override still wins');
+}
+
 // 1. full picture with GPS
 {
   const w = build([APPROACH, RUN1, DOG, RUN2, COOL], 800);

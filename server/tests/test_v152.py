@@ -42,3 +42,15 @@ def test_calibration_uses_steps_after_first_segment(client):
 
 def test_bad_quality_label_rejected(client):
     assert client.put("/api/workouts/wmotion001", json=wk(1, gps=1700.0, quality={"label": "awful"})).status_code == 422
+
+
+def test_phone_pauses_and_live_log_roundtrip(client):
+    """v1.16: the pauses the phone detected live and its decision log are stored with the workout (not dropped as unknown fields)."""
+    w = wk(5, gps=1700.0, phone_pauses=[[104.0, 158.0], [637.0, 645.0]],
+           live_log=["12.3 workout start type=run strap=True gps=True", "106.1 PAUSE decided: strap-still 3s lastStrapStep=4s ago sc3=0.0 sc8=67.5"])
+    assert client.put("/api/workouts/wmotion005", json=w).status_code == 200
+    full = client.get("/api/workouts/wmotion005").json()
+    assert full["phone_pauses"] == [[104.0, 158.0], [637.0, 645.0]]
+    assert full["live_log"][1].startswith("106.1 PAUSE decided")
+    old = client.put("/api/workouts/wmotion006", json=wk(6, gps=1600.0)); assert old.status_code == 200
+    assert client.get("/api/workouts/wmotion006").json().get("phone_pauses") is None
