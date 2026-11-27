@@ -115,6 +115,7 @@
     if (t === 'settings') renderSettings();
     if (t === 'weight' && window.FTScale) window.FTScale.onShow();
     if (t === 'push' && window.FTPush) window.FTPush.onShow();
+    if (t === 'pull' && window.FTPull) window.FTPull.onShow();
     if (t === 'settings' && window.FTScale) window.FTScale.loadProfile();
   }
 

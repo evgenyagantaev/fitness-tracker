@@ -55,6 +55,7 @@ public class WorkoutRecorderPlugin extends Plugin {
         } catch (Exception ignored) {}
         registerScreenOff();
         recoverPushup();
+        setupPullups();
     }
 
     private android.content.BroadcastReceiver screenOff;
@@ -423,6 +424,7 @@ public class WorkoutRecorderPlugin extends Plugin {
     public void pushupStart(PluginCall call) {
         WorkoutService s = WorkoutService.instance;
         if (s != null && s.workoutActive) { call.reject("Идёт запись тренировки", "recording"); return; }
+        if (PullupSession.get(getContext()).active()) { call.reject("Идёт подход подтягиваний", "pullups"); return; }
         String err = pushupSession().start();
         if (err != null) { call.reject(err, err); return; }
         keepScreenOn(true);
@@ -445,6 +447,77 @@ public class WorkoutRecorderPlugin extends Plugin {
         }
         keepScreenOn(false);
         applyPushupGuard(false);
+        call.resolve(r);
+    }
+
+    // ---- v1.17 pull-up counter (phone accelerometer; works with the screen off, in a pocket or on the neck) ----
+    private void setupPullups() {
+        try {
+            PullupSession p = PullupSession.get(getContext());
+            p.setListener(new PullupSession.Listener() {
+                @Override public void onState(JSONObject st) {
+                    try { notifyListeners("pullup", new JSObject(st.toString())); } catch (Exception ignored) {}
+                }
+                @Override public void onFinished(JSONObject set, String reason) {
+                    JSObject o = new JSObject(); o.put("reason", reason);
+                    if (set != null) { try { o.put("set", new JSObject(lite(set).toString())); } catch (Exception ignored) {} }
+                    notifyListeners("pullupFinished", o, true);
+                }
+            });
+            JSONObject left = PullupSession.recoverLeftover(getContext());
+            if (left != null) {
+                JSObject o = new JSObject(); o.put("reason", "recovered");
+                try { o.put("set", new JSObject(left.toString())); } catch (Exception ignored) {}
+                notifyListeners("pullupFinished", o, true);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /** the set without its raw block (the raw goes through takePullupSets only) */
+    private static JSONObject lite(JSONObject set) {
+        try { JSONObject c = new JSONObject(set.toString()); c.remove("raw"); return c; } catch (Exception e) { return set; }
+    }
+
+    @PluginMethod
+    public void pullupInfo(PluginCall call) {
+        PullupSession p = PullupSession.get(getContext());
+        JSObject r;
+        try { r = new JSObject(p.state().toString()); } catch (Exception e) { r = new JSObject(); }
+        r.put("present", p.present());
+        try { r.put("sensor", new JSObject(p.sensorInfo().toString())); } catch (Exception ignored) {}
+        WorkoutService s = WorkoutService.instance;
+        r.put("recording", s != null && s.workoutActive);
+        r.put("pushups", pushups != null && pushups.active());
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void pullupStart(PluginCall call) {
+        WorkoutService s = WorkoutService.instance;
+        if (s != null && s.workoutActive) { call.reject("Идёт запись тренировки", "recording"); return; }
+        if (pushups != null && pushups.active()) { call.reject("Идёт подход отжиманий", "pushups"); return; }
+        String err = PullupSession.get(getContext()).start(call.getInt("countdown", 8));
+        if (err != null) { call.reject(err, err); return; }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void pullupUndo(PluginCall call) { PullupSession.get(getContext()).undo(); call.resolve(); }
+
+    /** end the set now; resolves with {set} without raw (null if nothing was counted) */
+    @PluginMethod
+    public void pullupFinish(PluginCall call) {
+        JSObject r = new JSObject();
+        JSONObject set = PullupSession.get(getContext()).finish(call.getString("reason", "app"));
+        if (set != null) { try { r.put("set", new JSObject(lite(set).toString())); } catch (Exception ignored) {} }
+        call.resolve(r);
+    }
+
+    /** finished sets with raw accelerometer, emptied after reading */
+    @PluginMethod
+    public void takePullupSets(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("sets", PullupStore.take(getContext()));
         call.resolve(r);
     }
 

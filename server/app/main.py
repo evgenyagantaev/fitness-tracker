@@ -351,6 +351,25 @@ class PushupBatch(BaseModel):
     items: list[PushupSet] = Field(max_length=500)
 
 
+class PullupSet(PushupSet):
+    """v1.17: pull-ups from the phone accelerometer; raw = base64 zlib int16 [dt_ms, ax, ay, az] (0.01 m/s²) for tuning"""
+    source: str = Field(default="accel", max_length=40)
+    close: str | None = Field(default=None, max_length=20)
+    rep_ms: list[int] | None = Field(default=None, max_length=1000)
+    params: str | None = Field(default=None, max_length=40)
+    sensor: dict[str, str | int | float | bool | None] | None = None
+    raw_fmt: str | None = Field(default=None, max_length=20)
+    raw_t0: int | None = None
+    raw_n: int | None = Field(default=None, ge=0, le=200_000)
+    raw_go_ms: int | None = None
+    raw_truncated: bool | None = None
+    raw: str | None = Field(default=None, max_length=1_500_000, pattern=r"^[A-Za-z0-9+/=]*$")
+
+
+class PullupBatch(BaseModel):
+    items: list[PullupSet] = Field(max_length=50)
+
+
 class WeighingBatch(BaseModel):
     items: list[Weighing] = Field(max_length=500)
 
@@ -743,6 +762,30 @@ def create_app(db_path: str | None = None, token: str | None = None) -> FastAPI:
     @app.delete("/api/pushups/{sid}", dependencies=A)
     def delete_pushup(sid: str):
         if not db.delete_pushup_set(sid):
+            raise HTTPException(404, "not found")
+        return {"ok": True}
+
+    # ---- v1.17: pull-up sets counted by the phone accelerometer (+ raw for tuning) ----
+    @app.post("/api/pullups", dependencies=A)
+    def post_pullups(b: PullupBatch):
+        return db.add_pullup_sets([x.model_dump() for x in b.items])
+
+    @app.get("/api/pullups", dependencies=A)
+    def list_pullups(days: Annotated[int, Query(ge=1, le=3650)] = 60):
+        now = datetime.now(tz)
+        since = int((now - _dt.timedelta(days=days)).timestamp() * 1000)
+        return {"items": [{**w, "date": datetime.fromtimestamp(w["t"] / 1000, tz).date().isoformat()} for w in db.list_pullup_sets(since)]}
+
+    @app.get("/api/pullups/{sid}/raw", dependencies=A)
+    def pullup_raw(sid: str):
+        r = db.pullup_raw(sid)
+        if r is None:
+            raise HTTPException(404, "not found")
+        return r
+
+    @app.delete("/api/pullups/{sid}", dependencies=A)
+    def delete_pullup(sid: str):
+        if not db.delete_pullup_set(sid):
             raise HTTPException(404, "not found")
         return {"ok": True}
 

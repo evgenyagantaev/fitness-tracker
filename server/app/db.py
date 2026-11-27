@@ -95,6 +95,23 @@ CREATE TABLE IF NOT EXISTS pushup_sets (
     updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS pushup_sets_t ON pushup_sets(t);
+-- v1.17: pull-up sets counted by the phone accelerometer; same columns, the raw accelerometer is kept apart (tuning data)
+CREATE TABLE IF NOT EXISTS pullup_sets (
+    id TEXT PRIMARY KEY,
+    t INTEGER NOT NULL,
+    reps INTEGER NOT NULL,
+    duration_s REAL NOT NULL,
+    source TEXT NOT NULL,
+    data TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pullup_sets_t ON pullup_sets(t);
+CREATE TABLE IF NOT EXISTS pullup_raw (
+    id TEXT PRIMARY KEY,             -- = pullup_sets.id
+    fmt TEXT NOT NULL,
+    data TEXT NOT NULL               -- base64(zlib(int16 LE [dt_ms, ax, ay, az] × n)), 0.01 m/s²
+);
 """
 
 
@@ -444,6 +461,45 @@ class Database:
         import time as _t
         with self.tx() as c:
             cur = c.execute("UPDATE pushup_sets SET deleted=1, updated_at=? WHERE id=?", (int(_t.time() * 1000), sid))
+            return cur.rowcount > 0
+
+    # ---- v1.17 pull-ups (same shape as push-ups + raw accelerometer) ----
+    def add_pullup_sets(self, items: list[dict[str, Any]]) -> dict[str, int]:
+        import time as _t
+        added = 0
+        now = int(_t.time() * 1000)
+        skip = ("id", "t", "reps", "duration_s", "source", "raw")
+        with self.tx() as c:
+            for w in items:
+                if c.execute("SELECT 1 FROM pullup_sets WHERE id=?", (w["id"],)).fetchone() is None:
+                    c.execute("INSERT INTO pullup_sets (id,t,reps,duration_s,source,data,deleted,updated_at) VALUES (?,?,?,?,?,?,0,?)",
+                              (w["id"], int(w["t"]), int(w["reps"]), float(w["duration_s"]), str(w.get("source") or "accel"),
+                               json.dumps({k: v for k, v in w.items() if k not in skip and v is not None}, ensure_ascii=False), now))
+                    added += 1
+                if w.get("raw") and c.execute("SELECT 1 FROM pullup_raw WHERE id=?", (w["id"],)).fetchone() is None:
+                    c.execute("INSERT INTO pullup_raw (id,fmt,data) VALUES (?,?,?)", (w["id"], str(w.get("raw_fmt") or "pullraw1"), w["raw"]))
+        return {"added": added}
+
+    def list_pullup_sets(self, since_t: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT s.*, (SELECT length(r.data) FROM pullup_raw r WHERE r.id=s.id) AS raw_len "
+                                      "FROM pullup_sets s WHERE s.deleted=0 AND s.t>=? ORDER BY s.t", (int(since_t),)).fetchall()
+        out = []
+        for r in rows:
+            d = self._pu_row(r)
+            d["has_raw"] = bool(r["raw_len"])
+            out.append(d)
+        return out
+
+    def pullup_raw(self, sid: str) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM pullup_raw WHERE id=?", (sid,)).fetchone()
+        return None if r is None else {"id": r["id"], "fmt": r["fmt"], "data": r["data"]}
+
+    def delete_pullup_set(self, sid: str) -> bool:
+        import time as _t
+        with self.tx() as c:
+            cur = c.execute("UPDATE pullup_sets SET deleted=1, updated_at=? WHERE id=?", (int(_t.time() * 1000), sid))
             return cur.rowcount > 0
 
     def workouts_since(self, rev: int) -> list[dict[str, Any]]:
