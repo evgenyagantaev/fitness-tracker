@@ -48,21 +48,55 @@ public class WorkoutRecorderPlugin extends Plugin {
                 }
             });
         } catch (Exception ignored) {}
+        try {
+            getActivity().runOnUiThread(() -> {
+                if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).setSessionProbe(() -> pushups != null && pushups.active());
+            });
+        } catch (Exception ignored) {}
+        registerScreenOff();
         recoverPushup();
     }
 
+    private android.content.BroadcastReceiver screenOff;
+    /** v1.14.1: the power button (screen off) ends the set and saves it, as before; Home / Recents only pause it */
+    private void registerScreenOff() {
+        if (screenOff != null) return;
+        screenOff = new android.content.BroadcastReceiver() {
+            @Override public void onReceive(Context c, Intent i) {
+                if (pushups == null || !pushups.active()) return;
+                JSONObject set = pushups.finish();
+                keepScreenOn(false);
+                applyPushupGuard(false);
+                JSObject o = new JSObject(); o.put("reason", "screen-off");
+                if (set != null) { try { o.put("set", new JSObject(set.toString())); } catch (Exception ignored) {} }
+                notifyListeners("pushupFinished", o, true);
+            }
+        };
+        try { getContext().registerReceiver(screenOff, new android.content.IntentFilter(Intent.ACTION_SCREEN_OFF)); }
+        catch (Exception e) { screenOff = null; }
+    }
+
+    @Override
+    protected void handleOnDestroy() {
+        super.handleOnDestroy();
+        try { if (screenOff != null) getContext().unregisterReceiver(screenOff); } catch (Exception ignored) {}
+        screenOff = null;
+    }
+
     /** v1.12: lock or release the full-screen touch guard for a push-up set. */
-    private void applyPushupGuard(boolean on) {
+    private void applyPushupGuard(boolean on) { applyPushupGuard(on, true); }
+
+    private void applyPushupGuard(boolean on, boolean locked) {
         try {
             getActivity().runOnUiThread(() -> {
-                if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).setPushupGuard(on);
+                if (getActivity() instanceof MainActivity) ((MainActivity) getActivity()).setPushupGuard(on, locked);
             });
         } catch (Exception ignored) {}
     }
 
     @PluginMethod
     public void setPushupGuard(PluginCall call) {
-        applyPushupGuard(call.getBoolean("on", false));
+        applyPushupGuard(call.getBoolean("on", false), call.getBoolean("locked", true));
         call.resolve();
     }
 
@@ -378,6 +412,7 @@ public class WorkoutRecorderPlugin extends Plugin {
         r.put("present", p.present()); r.put("maxRange", p.maxRange()); r.put("sensor", p.sensorName());
         r.put("binary", p.maxRange() <= 5.5f); r.put("voice", p.voiceClips()); r.put("active", p.active());
         r.put("paused", p.paused()); r.put("reps", p.reps());
+        try { if (getActivity() instanceof MainActivity) r.put("guard", ((MainActivity) getActivity()).guardState()); } catch (Exception ignored) {}
         WorkoutService s = WorkoutService.instance;
         r.put("recording", s != null && s.workoutActive);
         call.resolve(r);
@@ -441,11 +476,12 @@ public class WorkoutRecorderPlugin extends Plugin {
         super.handleOnResume();
         recoverPushup();
         if (pushups != null && pushups.paused()) {
+            boolean cold = pushups.takeRestored();   // the app was killed meanwhile: open usable, never locked
             String err = pushups.resume();
             if (err != null) return;
             keepScreenOn(true);
-            applyPushupGuard(true);
-            JSObject o = new JSObject(); o.put("reps", pushups.reps()); o.put("resumed", true);
+            applyPushupGuard(true, !cold);
+            JSObject o = new JSObject(); o.put("reps", pushups.reps()); o.put("resumed", true); o.put("locked", !cold);
             notifyListeners("pushupResumed", o, true);
         }
     }

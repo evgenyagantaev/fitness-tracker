@@ -20,16 +20,14 @@ final class PushupLive {
     static final String FILE = "pushup-live.json";
     private PushupLive() {}
 
-    /** the set has been idle long enough to close itself (wall clock: used after a process death) */
+    /**
+     * the set is older than the idle limit (wall clock: used after a process death / reboot). A leftover is never brought back locked:
+     * it is either closed and saved right away (this) or picked up unlocked.
+     */
     static boolean expired(JSONObject live, long nowWall) {
         if (live == null) return false;
-        int reps = live.optInt("reps");
-        if (reps > 0) {
-            long last = live.optLong("lastRepWall", 0);
-            return last > 0 && nowWall - last > PushupSession.IDLE_END_MS;
-        }
-        long start = live.optLong("startedAt", 0);
-        return start > 0 && nowWall - start > PushupSession.EMPTY_END_MS;
+        long last = Math.max(live.optLong("lastRepWall", 0), live.optLong("startedAt", 0));
+        return last > 0 && nowWall - last > PushupSession.IDLE_END_MS;
     }
 
     /** a finished-set record from a live snapshot (null if there were no reps) */

@@ -48,4 +48,17 @@ public class PushupGuardTest {
         assertTrue(g.isGuarding());
         assertFalse(g.isLocked());
     }
+
+    @Test public void restoredSetOpensUnlockedAndLongTouchFailsafeUnlocks() {
+        PushupGuard g = new PushupGuard();
+        g.startUnlocked();
+        assertTrue(g.isGuarding()); assertFalse(g.isLocked());
+        assertFalse("nothing to force", g.forceUnlock());
+        g.start();
+        assertTrue(g.isLocked());
+        assertTrue("3 s touch failsafe releases the lock", g.forceUnlock());
+        assertFalse(g.isLocked()); assertTrue(g.isGuarding());
+        assertEquals("unlocked", g.name());
+        g.stop(); assertEquals("off", g.name());
+    }
 }

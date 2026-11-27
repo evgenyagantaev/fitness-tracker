@@ -9,7 +9,7 @@
   const WR = isNative && P.WorkoutRecorder ? P.WorkoutRecorder : null;
   const K_PEND = 'ft.pushPending', K_APPLIED = 'ft.pushApplied', K_CACHE = 'ft.pushSets';
   const COUNTDOWN_S = 5;
-  let state = 'idle', locked = false, countdownTimer = null, nativeBound = false, sessionSets = [], data = null, chart = null;
+  let state = 'idle', locked = false, countdownTimer = null, nativeBound = false, finishing = false, syncing = false, sessionSets = [], data = null, chart = null;
 
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
   const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
@@ -78,7 +78,7 @@
     if (state === 'countdown') $('pushHint').textContent = locked ? 'Экран заблокирован — нажми громкость' : 'Начну считать через…';
     else if (state === 'armed') $('pushHint').textContent = locked ? 'Экран заблокирован — нажми громкость' : 'Опускайся к телефону. Закончил — держи «Закончить».';
   }
-  async function guard(on) { if (WR && WR.setPushupGuard) { try { await WR.setPushupGuard({ on: !!on }); } catch (e) { /* ignore */ } } }
+  async function guard(on, lock) { if (WR && WR.setPushupGuard) { try { await WR.setPushupGuard({ on: !!on, locked: lock !== false }); } catch (e) { /* ignore */ } } }
   function renderSession() {
     const box = $('pushSession'); if (!box) return;
     if (!sessionSets.length) { box.innerHTML = ''; return; }
@@ -95,29 +95,37 @@
     WR.addListener('pushupResumed', (e) => onResumed(e)).catch(() => {});
     WR.addListener('pushupPaused', () => { /* keep the overlay and the count; the native side has only dropped the sensor */ }).catch(() => {});
   }
-  function showArmed(n) {
+  /** the native side owns the lock: the screen shows whatever it says (`lock`), it never locks itself */
+  function showArmed(n, lock) {
     state = 'armed';
     overlay(true);
     $('pushPhase').textContent = 'Считаю';
     setCount(n || 0);
-    setLocked(true);
+    setLocked(lock !== false);
     hint();
-    guard(true);
   }
   function onResumed(e) {
     if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-    showArmed(e && e.reps ? e.reps : 0);
+    showArmed(e && e.reps ? e.reps : 0, !(e && e.locked === false));
   }
+  /** v1.14.1: the native session is the truth. Called on every return to the app and every 2 s while the set screen is up. */
+  async function sync() {
+    if (!WR || syncing || finishing || state === 'countdown') return;
+    syncing = true;
+    try {
+      const info = await WR.pushupInfo();
+      if (!info) return;
+      if (state === 'armed') {
+        if (!info.active) { cleanup(); flush().then(refresh); }          // closed natively (power button, idle): nothing may stay locked
+        else { setCount(info.reps || 0); if (info.guard && info.guard !== 'off') setLocked(info.guard === 'locked'); else if (locked) setLocked(false); }
+      } else if (state === 'idle' && info.active && !info.recording) {
+        showArmed(info.reps || 0, info.guard === 'locked');
+      } else if (state === 'idle' && !overlayHidden()) { cleanup(); }
+    } catch (e) { /* ignore */ } finally { syncing = false; }
+  }
+  function overlayHidden() { return $('pushOverlay').classList.contains('hidden'); }
   /** after Recents / Home / a killed activity: pick the open set back up (no new countdown) */
-  async function rejoin() {
-    if (!WR || (state !== 'idle' && state !== 'countdown')) return false;
-    let info = null;
-    try { info = await WR.pushupInfo(); } catch (e) { return false; }
-    if (!info || !info.active || info.recording) return false;
-    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-    showArmed(info.reps || 0);
-    return true;
-  }
+  async function rejoin() { await sync(); return state === 'armed'; }
   async function startSet() {
     if (!WR || state !== 'idle') return;
     $('pushMsg').textContent = '';
@@ -167,7 +175,9 @@
     if (state === 'countdown') { cleanup(); return; }
     if (state !== 'armed') return;
     let set = null;
+    finishing = true;
     try { set = (await WR.pushupFinish()).set || null; } catch (e) { /* ignore */ }
+    finishing = false;
     finished(set, 'user');
   }
   function finished(set, reason) {
@@ -250,15 +260,11 @@
     if ($('pushStart')) $('pushStart').addEventListener('click', startSet);
     if ($('pushFinish')) hold($('pushFinish'), 1200, finishSet);
     if ($('pushUndo')) hold($('pushUndo'), 600, () => { if (!locked && state === 'armed' && WR) WR.pushupUndo().catch(() => {}); });
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) return;
-      flush();
-      if (state === 'armed' || state === 'countdown') { setLocked(true); guard(true); }
-      else rejoin();
-    });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) return; flush(); sync(); });
     bindNative();
+    setInterval(() => { if (state === 'armed' || !overlayHidden()) sync(); }, 2000);
     setTimeout(flush, 5000);
-    setTimeout(rejoin, 400);
+    setTimeout(sync, 400);
   }
   init();
   window.FTPush = { refresh, onShow: () => { refresh(); rejoin(); }, flush, _applyToBoard: applyToBoard, _removeFromBoard: removeFromBoard, _rejoin: rejoin };

@@ -130,9 +130,10 @@ public class PushupCounterTest {
         JSONObject live = new JSONObject().put("reps", 7).put("startedAt", 1000).put("lastRepWall", 50_000);
         assertFalse(PushupLive.expired(live, 50_000 + 119_000));
         assertTrue(PushupLive.expired(live, 50_000 + 120_001));
+        // no reps: the same 2 minutes, counted from the start — a leftover is never brought back locked
         JSONObject empty = new JSONObject().put("reps", 0).put("startedAt", 1000);
-        assertFalse(PushupLive.expired(empty, 1000 + 299_000));
-        assertTrue(PushupLive.expired(empty, 1000 + 300_001));
+        assertFalse(PushupLive.expired(empty, 1000 + 119_000));
+        assertTrue(PushupLive.expired(empty, 1000 + 120_001));
         assertFalse(PushupLive.expired(null, 999999));
         JSONObject set = PushupLive.toSet(live, 50_000 + 130_000);
         assertEquals(7, set.getInt("reps"));

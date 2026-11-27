@@ -38,7 +38,7 @@ final class PushupSession implements SensorEventListener {
     private long startedAt, armedMono;
     private String setId;
     private float maxRange = 5f;
-    private boolean active = false, paused = false;
+    private boolean active = false, paused = false, restored = false;
 
     PushupSession(Context ctx) {
         this.ctx = ctx.getApplicationContext();
@@ -51,6 +51,8 @@ final class PushupSession implements SensorEventListener {
     boolean present() { return prox != null; }
     boolean active() { return active; }
     boolean paused() { return active && paused; }
+    /** true once after the set was rebuilt from disk (the app had been killed): the caller opens it unlocked */
+    synchronized boolean takeRestored() { boolean r = restored; restored = false; return r; }
     int reps() { return counter == null ? 0 : counter.reps(); }
     float maxRange() { return prox != null ? prox.getMaximumRange() : 0f; }
     String sensorName() { return prox != null ? prox.getName() : null; }
@@ -158,6 +160,7 @@ final class PushupSession implements SensorEventListener {
         firstEvent = true;
         paused = true;
         active = true;
+        restored = true;
         maxRange = prox != null ? prox.getMaximumRange() : 5f;
         Log.i(TAG, "restored " + reps() + " reps, paused, id=" + setId);
         h.removeCallbacks(idleCheck);

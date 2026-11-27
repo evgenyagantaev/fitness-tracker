@@ -23,6 +23,23 @@ public class MainActivity extends BridgeActivity {
     private int savedUi;
     private boolean savedDecorFits = true;
     private Runnable onUnlocked;
+    private java.util.function.BooleanSupplier sessionProbe;
+    private long guardSince = 0;
+    private final android.os.Handler uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable holdUnlock = this::unlockFromTouch;
+    /** a guard with no push-up session behind it (and no countdown) for this long is a leftover: release it */
+    static final long GUARD_ORPHAN_MS = 15_000;
+    private final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            if (!pushupGuard.isGuarding()) return;
+            boolean alive = sessionProbe != null && sessionProbe.getAsBoolean();
+            if (!alive && android.os.SystemClock.elapsedRealtime() - guardSince > GUARD_ORPHAN_MS) {
+                setPushupGuard(false, false);
+                return;
+            }
+            uiHandler.postDelayed(this, 2000);
+        }
+    };
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -32,16 +49,33 @@ public class MainActivity extends BridgeActivity {
     }
 
     public void setOnPushupUnlocked(Runnable r) { onUnlocked = r; }
+    /** true while a native push-up session exists (counting or paused) */
+    public void setSessionProbe(java.util.function.BooleanSupplier p) { sessionProbe = p; }
+    public String guardState() { return pushupGuard.name(); }
 
-    public void setPushupGuard(boolean on) {
+    public void setPushupGuard(boolean on) { setPushupGuard(on, true); }
+
+    /** @param locked with `on`: start LOCKED (a fresh set, a return from Recents) or UNLOCKED (a set restored after the app was killed) */
+    public void setPushupGuard(boolean on, boolean locked) {
+        uiHandler.removeCallbacks(holdUnlock);
+        uiHandler.removeCallbacks(watchdog);
         if (on) {
-            pushupGuard.start();
-            addShield();
+            guardSince = android.os.SystemClock.elapsedRealtime();
+            if (locked) { pushupGuard.start(); addShield(); } else { pushupGuard.startUnlocked(); removeShield(); }
             enterImmersive();
+            uiHandler.postDelayed(watchdog, 2000);
         } else {
             pushupGuard.stop();
             removeShield();
             exitImmersive();
+        }
+    }
+
+    /** the 3-second touch failsafe: the volume keys may be dead on some ROMs */
+    private void unlockFromTouch() {
+        if (pushupGuard.forceUnlock()) {
+            removeShield();
+            if (onUnlocked != null) onUnlocked.run();
         }
     }
 
@@ -80,7 +114,12 @@ public class MainActivity extends BridgeActivity {
         s.setClickable(true);
         s.setFocusable(false);
         s.setBackgroundColor(0x00000000);
-        s.setOnTouchListener((v, e) -> true);
+        s.setOnTouchListener((v, e) -> {
+            int a = e.getActionMasked();
+            if (a == android.view.MotionEvent.ACTION_DOWN) { uiHandler.removeCallbacks(holdUnlock); uiHandler.postDelayed(holdUnlock, 3000); }
+            else if (a == android.view.MotionEvent.ACTION_UP || a == android.view.MotionEvent.ACTION_CANCEL) uiHandler.removeCallbacks(holdUnlock);
+            return true;
+        });
         s.setElevation(10000f);
         addContentView(s, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
