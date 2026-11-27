@@ -217,29 +217,78 @@
   }
 
   // ---------- site section ----------
+  /** filled push-up cells of a day from the day board (the source of truth: manual, auto, corrected) */
+  function boardCells(date) {
+    try {
+      const s = Store.view(date).sets.pushups;
+      return (s && s.cells) ? s.cells.slice() : [];
+    } catch (e) { return []; }
+  }
   function groupByDate(items) {
     const m = new Map();
     for (const w of items) { const d = m.get(w.date) || { date: w.date, total: 0, best: 0, sets: 0 }; d.total += w.reps; d.best = Math.max(d.best, w.reps); d.sets += 1; m.set(w.date, d); }
     return m;
   }
+  /** last `n` calendar dates, today first */
+  function lastDates(n) {
+    const out = [];
+    for (let i = 0; i < n; i++) { const d = new Date(); d.setDate(d.getDate() - i); out.push(localDate(d)); }
+    return out;
+  }
+  /**
+   * per-day totals: the day board wins on any date that has push-up cells; dates that exist only
+   * in the detector log (older records, or the board not yet loaded) fill the gaps
+   */
+  function mergedByDate(items) {
+    const by = groupByDate(items);
+    for (const date of Object.keys(Store.days())) {
+      const cells = boardCells(date);
+      if (!cells.length) continue;
+      by.set(date, { date, total: cells.reduce((a, c) => a + c.reps, 0), best: Math.max(...cells.map((c) => c.reps)), sets: cells.length });
+    }
+    return by;
+  }
   function render(r) {
     const items = (r && r.items) || [];
-    $('pushEmpty').classList.toggle('hidden', items.length > 0);
-    $('pushData').classList.toggle('hidden', !items.length);
-    if (!items.length) return;
-    const today = localDate(), by = groupByDate(items), td = by.get(today);
-    const week = items.filter((w) => w.t >= Date.now() - 7 * 86400000).reduce((x, w) => x + w.reps, 0);
-    const best = items.reduce((x, w) => Math.max(x, w.reps), 0);
+    const by = mergedByDate(items);
+    const today = localDate();
+    const todayCells = boardCells(today);
+    const hasToday = todayCells.length > 0;
+    const hasHist = by.size > 0;
+    $('pushEmpty').classList.toggle('hidden', hasToday || hasHist);
+    $('pushData').classList.toggle('hidden', !(hasToday || hasHist));
+    if (!(hasToday || hasHist)) return;
+    const td = by.get(today) || { total: 0, sets: 0, best: 0 };
+    const week = lastDates(7).reduce((s, d) => s + ((by.get(d) || {}).total || 0), 0);
+    const best = lastDates(60).reduce((s, d) => Math.max(s, (by.get(d) || {}).best || 0), 0);
     const card = (v, k) => `<div class="card"><div class="v">${v}</div><div class="k">${k}</div></div>`;
-    $('pushCards').innerHTML = '<div class="cards">' + card(td ? td.total : 0, 'отжиманий сегодня') + card(td ? td.sets : 0, 'подходов сегодня') +
-      card(td ? td.best : 0, 'лучший подход сегодня') + card(week, 'за 7 дней') + card(best, 'рекорд подхода (60 дней)') + '</div>';
-    const mine = items.filter((w) => w.date === today).sort((a, b) => a.t - b.t);
-    $('pushToday').innerHTML = mine.length ? '<div class="table-wrap"><table class="calib-table"><tr><th>Время</th><th>Раз</th><th>Время подхода</th><th>Темп, раз/мин</th><th></th></tr>' +
-      mine.map((w) => `<tr><td>${hm(w.t)}</td><td><b>${w.reps}</b></td><td>${dur(w.duration_s)}</td><td>${w.duration_s >= 5 ? Math.round((w.reps - 1) * 60 / w.duration_s) : '—'}</td><td><button class="btn small-btn push-del" data-id="${esc(w.id)}" data-date="${esc(w.date)}" title="Удалить подход">✕</button></td></tr>`).join('') + '</table></div>' : '';
+    $('pushCards').innerHTML = '<div class="cards">' + card(td.total, 'отжиманий сегодня') + card(td.sets, 'подходов сегодня') +
+      card(td.best, 'лучший подход сегодня') + card(week, 'за 7 дней') + card(best, 'рекорд подхода (60 дней)') + '</div>';
+    const autoById = new Map();
+    for (const w of items) if (w.id) autoById.set(w.id, w);
+    // today: the board, in order; auto rows can show the detector's time and pace, always with the board's reps
+    $('pushToday').innerHTML = todayCells.length ? '<div class="table-wrap"><table class="calib-table"><tr><th></th><th>Раз</th><th>Время</th><th>Время подхода</th><th>Темп, раз/мин</th><th></th></tr>' +
+      todayCells.map((c, i) => {
+        const w = c.id ? autoById.get(c.id) : null;
+        const mark = c.src === 'auto' ? ' 📲' : '';
+        const when = w ? hm(w.t) : (c.src === 'auto' ? '📲' : 'вручную');
+        const d = w ? dur(w.duration_s) : '—';
+        const pace = w && w.duration_s >= 5 ? Math.round((c.reps - 1) * 60 / w.duration_s) : '—';
+        return `<tr><td class="muted">${i + 1}${mark}</td><td><b>${c.reps}</b></td><td>${when}</td><td>${d}</td><td>${pace}</td><td><button class="btn small-btn push-del" data-i="${i}" data-id="${esc(c.id || '')}" data-date="${esc(today)}" title="Удалить подход">✕</button></td></tr>`;
+      }).join('') + '</table></div>' : '';
     document.querySelectorAll('.push-del').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm('Удалить этот подход?')) return;
-      try { await api('api/pushups/' + encodeURIComponent(b.dataset.id), { method: 'DELETE' }); removeFromBoard(b.dataset.id, b.dataset.date); refresh(); }
-      catch (e) { alert('Не удалось удалить: ' + e.message); }
+      const date = b.dataset.date, id = b.dataset.id, i = Number(b.dataset.i);
+      if (id) {
+        try { await api('api/pushups/' + encodeURIComponent(id), { method: 'DELETE' }); } catch (e) { /* offline: the board is enough */ }
+        if (!Store.removeCellById(date, 'pushups', id)) {
+          const x = Store.view(date); if (x.sets.pushups) { x.sets.pushups.cells.splice(i, 1); Store.put(x); }
+        }
+      } else {
+        const x = Store.view(date); if (x.sets.pushups) { x.sets.pushups.cells.splice(i, 1); Store.put(x); }
+      }
+      if (window.FT && typeof window.FT.refreshToday === 'function') window.FT.refreshToday();
+      refresh();
     }));
     drawChart(by);
   }

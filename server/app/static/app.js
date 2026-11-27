@@ -69,6 +69,7 @@
   }
 
   function commit(rec) { Store.put(rec); renderSummary(); Reminders.reschedule(); }
+  window.FT.refreshToday = () => { renderToday(); };
 
   /** «Итого за день»: plain sums, nothing to reach. */
   function renderSummary() {

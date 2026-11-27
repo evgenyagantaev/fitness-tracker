@@ -152,8 +152,22 @@ try {
   await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'));
   ok(/Записан подход: 5/.test(await ap.textContent('#pushMsg')), 'screen-off event saves the set: ' + (await ap.textContent('#pushMsg')));
   await ap.waitForTimeout(500);
+  await ap.evaluate(() => FT.Sync.run());
   await ap.click('.tabs button[data-tab=push]');
-  await ap.waitForTimeout(600);
+  await ap.evaluate(() => FTPush.refresh());
+  await ap.waitForTimeout(400);
+  const appCards = (await ap.textContent('#pushCards')).replace(/\s+/g, ' ');
+  ok(/83.*отжиманий сегодня/.test(appCards) && /7.*подходов сегодня/.test(appCards) && /20.*лучший подход/.test(appCards),
+    'today cards follow the day board (20+12+10+11+12+13+5), not just the detector: ' + appCards);
+  // a manual correction on the board is what the tab shows, not the detector's original 20
+  await ap.evaluate(() => { const x = FT.Store.view(FT.localDate()); x.sets.pushups.cells[0].reps = 18; FT.Store.put(x); });
+  await ap.evaluate(() => FTPush.refresh());
+  ok(/81.*отжиманий сегодня/.test((await ap.textContent('#pushCards')).replace(/\s+/g, ' ')) &&
+     (await ap.$eval('#pushToday tr:nth-child(2) b', (e) => e.textContent)) === '18',
+     'a corrected board cell is what Сегодня shows');
+  await ap.evaluate(() => { const x = FT.Store.view(FT.localDate()); x.sets.pushups.cells[0].reps = 20; FT.Store.put(x); });
+  await ap.evaluate(() => { FTPush.refresh(); return FT.Sync.run(); });
+  await ap.waitForTimeout(400);
   await ap.screenshot({ path: shotPath('push-app-tab.png'), fullPage: true });
   await ap.click('.tabs button[data-tab=today]'); await ap.waitForTimeout(400);
   await ap.screenshot({ path: shotPath('push-app-board.png'), fullPage: true });
@@ -169,11 +183,13 @@ try {
   await page.waitForSelector('#loginToken', { state: 'visible' }); await page.fill('#loginToken', TOKEN); await page.click('#loginBtn');
   await page.waitForSelector('#app:not(.hidden)');
   await page.click('.tabs button[data-tab=push]');
+  await page.waitForFunction(() => FT.Store.view(FT.localDate()).sets.pushups.cells.length >= 7, null, { timeout: 10000 });
+  await page.evaluate(() => FTPush.refresh());
   await page.waitForSelector('#pushData:not(.hidden)');
   ok(!(await page.isVisible('#pushStart')), 'no counter button on the website');
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
   const cards = (await page.textContent('#pushCards')).replace(/\s+/g, ' ');
-  ok(/37.*отжиманий сегодня/.test(cards) && /3.*подходов сегодня/.test(cards) && /20.*лучший подход/.test(cards), 'site cards: ' + cards);
+  ok(/83.*отжиманий сегодня/.test(cards) && /7.*подходов сегодня/.test(cards) && /20.*лучший подход/.test(cards), 'site cards follow the day board: ' + cards);
   await page.locator('#tab-push').screenshot({ path: shotPath('push-web.png') });
   const rows = await page.$$eval('#pushToday tr', (r) => r.length);
   await page.click('#pushToday tr:nth-child(2) .push-del');
