@@ -1,6 +1,7 @@
 /* v1.10: push-up counter. The phone lies screen-up under the chest; the proximity sensor (native side) counts reps and says every
-   number aloud. Here: the set screen (countdown → big counter → hold to finish), putting finished sets on the day board with their real
-   reps, sending them to the server, and the site section (today, trend, delete). */
+   number aloud. v1.18.1: the native side also runs the same 8 s voice countdown and ready beep as pull-ups; reps before the ready
+   signal are ignored. Here: the set screen (countdown → big counter → hold to finish), putting finished sets on the day board with
+   their real reps, sending them to the server, and the site section (today, trend, delete). */
 (function () {
   'use strict';
   const { api, Store, isNative, localDate } = window.FT;
@@ -8,8 +9,8 @@
   const P = (window.Capacitor && window.Capacitor.Plugins) || {};
   const WR = isNative && P.WorkoutRecorder ? P.WorkoutRecorder : null;
   const K_PEND = 'ft.pushPending', K_APPLIED = 'ft.pushApplied', K_CACHE = 'ft.pushSets';
-  const COUNTDOWN_S = 5;
-  let state = 'idle', locked = false, countdownTimer = null, nativeBound = false, finishing = false, syncing = false, sessionSets = [], data = null, chart = null;
+  const COUNTDOWN_S = 8;
+  let state = 'idle', locked = false, nativeBound = false, finishing = false, syncing = false, sessionSets = [], data = null, chart = null;
 
   const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
   const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
@@ -97,7 +98,7 @@
   function bindNative() {
     if (nativeBound || !WR || !WR.addListener) return;
     const ok = [
-      listen('pushup', (e) => { if (state === 'armed') setCount(e.reps); }),
+      listen('pushup', (e) => applyNativeState(e)),
       listen('pushupFinished', (e) => finished(e.set, e.reason)),
       listen('pushupUnlocked', () => setLocked(false)),
       listen('pushupResumed', (e) => onResumed(e)),
@@ -105,36 +106,59 @@
     nativeBound = ok;
   }
   /** the native side owns the lock: the screen shows whatever it says (`lock`), it never locks itself */
+  function showCountdown(n) {
+    state = 'countdown';
+    overlay(true);
+    $('pushPhase').textContent = 'Ложись, телефон экраном вверх под грудь';
+    setCount(n == null ? COUNTDOWN_S : n, true);
+    hint();
+  }
   function showArmed(n, lock) {
     state = 'armed';
     overlay(true);
     $('pushPhase').textContent = 'Считаю';
     setCount(n || 0);
-    setLocked(lock !== false);
-    hint();
+    if (lock !== undefined) setLocked(lock !== false);
+    else hint();
+  }
+  /** native countdown ticks, the ready signal (counting=true), or a counted rep */
+  function applyNativeState(e) {
+    if (!e) return;
+    if (e.counting || e.undo != null) {
+      if (state === 'countdown' || state === 'idle') showArmed(e.reps || 0);
+      else if (state === 'armed' && e.reps != null) setCount(e.reps);
+    } else if (e.active !== false && (state === 'countdown' || state === 'idle' || e.countdown > 0)) {
+      showCountdown(e.countdown || 0);
+    }
   }
   function onResumed(e) {
-    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-    showArmed(e && e.reps ? e.reps : 0, !(e && e.locked === false));
+    const lock = !(e && e.locked === false);
+    if (e && e.counting === false) { showCountdown(e.countdown || 0); setLocked(lock); }
+    else showArmed(e && e.reps ? e.reps : 0, lock);
   }
   /** v1.14.1: the native session is the truth. Called on every return to the app and every 2 s while the set screen is up. */
   async function sync() {
-    if (!WR || syncing || finishing || state === 'countdown') return;
+    if (!WR || syncing || finishing) return;
     syncing = true;
     try {
       const info = await WR.pushupInfo();
       if (!info) return;
-      if (state === 'armed') {
-        if (!info.active) { cleanup(); flush().then(refresh); }          // closed natively (power button, idle): nothing may stay locked
-        else { setCount(info.reps || 0); if (info.guard && info.guard !== 'off') setLocked(info.guard === 'locked'); else if (locked) setLocked(false); }
-      } else if (state === 'idle' && info.active && !info.recording) {
-        showArmed(info.reps || 0, info.guard === 'locked');
+      if (info.active && !info.recording) {
+        if (info.counting) {
+          if (state !== 'armed') showArmed(info.reps || 0, info.guard === 'locked');
+          else { setCount(info.reps || 0); if (info.guard && info.guard !== 'off') setLocked(info.guard === 'locked'); else if (locked) setLocked(false); }
+        } else {
+          showCountdown(info.countdown || 0);
+          if (info.guard && info.guard !== 'off') setLocked(info.guard === 'locked');
+        }
+      } else if (state === 'armed' || state === 'countdown') {
+        cleanup(); flush().then(refresh);          // closed natively (power button, idle): nothing may stay locked
       } else if (state === 'idle' && !overlayHidden()) { cleanup(); }
     } catch (e) { /* ignore */ } finally { syncing = false; }
   }
   function overlayHidden() { return $('pushOverlay').classList.contains('hidden'); }
-  /** after Recents / Home / a killed activity: pick the open set back up (no new countdown) */
-  async function rejoin() { await sync(); return state === 'armed'; }
+  /** after Recents / Home / a killed activity: pick the open set back up (no new countdown if already counting) */
+  async function rejoin() { await sync(); return state === 'armed' || state === 'countdown'; }
   async function startSet() {
     if (!WR || state !== 'idle') return;
     $('pushMsg').textContent = '';
@@ -144,36 +168,17 @@
     try { info = await WR.pushupInfo(); } catch (e) { /* ignore */ }
     if (info && info.recording) { $('pushMsg').textContent = 'Идёт запись тренировки: отжимания считать нельзя, пока она не закончится.'; return; }
     if (info && !info.present) { $('pushMsg').textContent = 'В телефоне нет датчика приближения.'; return; }
-    state = 'countdown';
-    overlay(true);
-    $('pushPhase').textContent = 'Ложись, телефон экраном вверх под грудь';
+    showCountdown(COUNTDOWN_S);
     setLocked(true);
     await guard(true);
-    let left = COUNTDOWN_S;
-    setCount(left, true);
-    countdownTimer = setInterval(() => {
-      left -= 1;
-      if (left > 0) { setCount(left, true); return; }
-      clearInterval(countdownTimer); countdownTimer = null;
-      armed();
-    }, 1000);
-  }
-  async function armed() {
     try {
-      await WR.pushupStart();
+      await WR.pushupStart({ countdown: COUNTDOWN_S });
     } catch (e) {
       cleanup();
       $('pushMsg').textContent = e && e.code === 'recording' ? 'Идёт запись тренировки.' : e && e.code === 'no-sensor' ? 'В телефоне нет датчика приближения.' : 'Не удалось запустить счёт: ' + ((e && e.message) || e);
-      return;
     }
-    state = 'armed';
-    $('pushPhase').textContent = 'Считаю';
-    hint();
-    setCount(0);
-    try { if (navigator.vibrate) navigator.vibrate(150); } catch (e) { /* ignore */ }
   }
   function cleanup() {
-    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
     state = 'idle';
     setLocked(false);
     guard(false);
@@ -181,7 +186,13 @@
   }
   async function finishSet() {
     if (locked) return;
-    if (state === 'countdown') { cleanup(); return; }
+    if (state === 'countdown') {
+      finishing = true;
+      try { if (WR) await WR.pushupFinish(); } catch (e) { /* ignore */ }
+      finishing = false;
+      cleanup();
+      return;
+    }
     if (state !== 'armed') return;
     let set = null;
     finishing = true;

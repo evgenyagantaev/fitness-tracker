@@ -390,8 +390,11 @@ public class WorkoutRecorderPlugin extends Plugin {
         if (pushups == null) {
             pushups = new PushupSession(getContext());
             pushups.setListener(new PushupSession.Listener() {
+                @Override public void onState(JSONObject st) {
+                    try { notifyListeners("pushup", new JSObject(st.toString())); } catch (Exception ignored) {}
+                }
                 @Override public void onRep(int reps, boolean undo) {
-                    JSObject o = new JSObject(); o.put("reps", reps); o.put("undo", undo);
+                    JSObject o = new JSObject(); o.put("reps", reps); o.put("undo", undo); o.put("countdown", 0); o.put("counting", true);
                     notifyListeners("pushup", o);
                 }
                 @Override public void onAutoFinished(JSONObject set, String reason) {
@@ -413,19 +416,20 @@ public class WorkoutRecorderPlugin extends Plugin {
         r.put("present", p.present()); r.put("maxRange", p.maxRange()); r.put("sensor", p.sensorName());
         r.put("binary", p.maxRange() <= 5.5f); r.put("voice", p.voiceClips()); r.put("active", p.active());
         r.put("paused", p.paused()); r.put("reps", p.reps());
+        r.put("countdown", p.countdownLeft()); r.put("counting", p.counting());
         try { if (getActivity() instanceof MainActivity) r.put("guard", ((MainActivity) getActivity()).guardState()); } catch (Exception ignored) {}
         WorkoutService s = WorkoutService.instance;
         r.put("recording", s != null && s.workoutActive);
         call.resolve(r);
     }
 
-    /** start counting now (the web part does the countdown); refused while a workout is recorded */
+    /** start a set with the same native countdown as pull-ups (default 8 s); refused while a workout is recorded */
     @PluginMethod
     public void pushupStart(PluginCall call) {
         WorkoutService s = WorkoutService.instance;
         if (s != null && s.workoutActive) { call.reject("Идёт запись тренировки", "recording"); return; }
         if (PullupSession.get(getContext()).active()) { call.reject("Идёт подход подтягиваний", "pullups"); return; }
-        String err = pushupSession().start();
+        String err = pushupSession().start(call.getInt("countdown", 8));
         if (err != null) { call.reject(err, err); return; }
         keepScreenOn(true);
         call.resolve();
@@ -555,6 +559,7 @@ public class WorkoutRecorderPlugin extends Plugin {
             keepScreenOn(true);
             applyPushupGuard(true, !cold);
             JSObject o = new JSObject(); o.put("reps", pushups.reps()); o.put("resumed", true); o.put("locked", !cold);
+            o.put("countdown", pushups.countdownLeft()); o.put("counting", pushups.counting());
             notifyListeners("pushupResumed", o, true);
         }
     }

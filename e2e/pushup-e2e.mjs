@@ -39,19 +39,34 @@ try {
     localStorage.setItem('ft.config', JSON.stringify({ serverUrl: srv, token: tok }));
     const L = {}; let pending = []; let reps = 0, t0 = 0, recording = false;
     window.__push = {
-      rep: () => { reps += 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: false })); },
+      rep: () => { reps += 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: false, countdown: 0, counting: true })); },
       setRecording: (v) => { recording = v; },
       unlock: () => { window.__push.guard = 'unlocked'; (L.pushupUnlocked || []).forEach((cb) => cb({})); },
-      resumed: (n, locked) => { if (n != null) reps = n; window.__push.guard = locked === false ? 'unlocked' : 'locked'; (L.pushupResumed || []).forEach((cb) => cb({ reps, resumed: true, locked: locked !== false })); },
+      tick: () => {
+        if (window.__push.cd == null) return;
+        if (window.__push.cd > 0) window.__push.cd -= 1;
+        (L.pushup || []).forEach((cb) => cb({ reps, countdown: window.__push.cd, counting: false, active: true }));
+      },
+      go: () => {
+        window.__push.cd = 0; window.__push.counting = true;
+        (L.pushup || []).forEach((cb) => cb({ reps, countdown: 0, counting: true, active: true }));
+      },
+      resumed: (n, locked, extra) => {
+        if (n != null) reps = n;
+        window.__push.guard = locked === false ? 'unlocked' : 'locked';
+        const counting = extra && extra.counting === false ? false : true;
+        const countdown = extra && extra.countdown != null ? extra.countdown : 0;
+        (L.pushupResumed || []).forEach((cb) => cb({ reps, resumed: true, locked: locked !== false, counting, countdown }));
+      },
       finished: (set, reason) => { (L.pushupFinished || []).forEach((cb) => cb({ set, reason: reason || 'user' })); },
       calls: [],
     };
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: { WorkoutRecorder: {
       addListener(n, cb) { (L[n] = L[n] || []).push(cb); return { remove: async () => { L[n] = (L[n] || []).filter((x) => x !== cb); } }; },   // like the real bridge: a plain handle, not a promise
       async setPushupGuard({ on, locked }) { window.__push.calls.push(on ? 'guard-on' : 'guard-off'); window.__push.guard = on ? (locked === false ? 'unlocked' : 'locked') : 'off'; },
-      async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: !!window.__push.nativeActive, paused: false, reps: window.__push.nativeActive ? (window.__push.liveReps != null ? window.__push.liveReps : reps) : 0, guard: window.__push.guard || 'off', recording }; },
-      async pushupStart() { window.__push.calls.push('start'); reps = 0; t0 = Date.now(); window.__push.nativeActive = true; },
-      async pushupUndo() { if (reps > 0) { reps -= 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: true })); } window.__push.calls.push('undo'); },
+      async pushupInfo() { return { present: true, maxRange: 5, binary: true, sensor: 'mock', voice: true, active: !!window.__push.nativeActive, paused: false, reps: window.__push.nativeActive ? (window.__push.liveReps != null ? window.__push.liveReps : reps) : 0, countdown: window.__push.nativeActive && !window.__push.counting ? (window.__push.cd || 0) : 0, counting: !!window.__push.counting, guard: window.__push.guard || 'off', recording }; },
+      async pushupStart(opts) { const cd = (opts && opts.countdown) || 8; window.__push.calls.push('start:' + cd); reps = 0; t0 = Date.now(); window.__push.nativeActive = true; window.__push.counting = false; window.__push.cd = cd; (L.pushup || []).forEach((cb) => cb({ reps: 0, countdown: cd, counting: false, active: true })); },
+      async pushupUndo() { if (reps > 0) { reps -= 1; (L.pushup || []).forEach((cb) => cb({ reps, undo: true, countdown: 0, counting: true })); } window.__push.calls.push('undo'); },
       async pushupFinish() { window.__push.calls.push('finish'); window.__push.nativeActive = false; const set = reps ? { id: 'pu-' + t0 + '-' + (reps + 100), t: t0, reps, duration_s: reps * 1.4, armed_s: 30, source: 'proximity' } : null; if (set) pending.push(set); return { set }; },
       async takePushupSets() { const a = pending; pending = []; return { sets: a }; },
       async getState() { return { running: false }; },
@@ -66,11 +81,17 @@ try {
   await ap.click('.tabs button[data-tab=push]');
   await ap.waitForSelector('#pushData:not(.hidden)');
   await ap.click('#pushStart');
-  ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '5', 'countdown overlay starts at 5');
+  ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '8', 'countdown overlay starts at 8');
   ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'locked during countdown');
   ok((await ap.textContent('#pushHint')).includes('Экран заблокирован'), 'lock hint shown');
-  await ap.waitForFunction(() => window.__push.calls.includes('start'), null, { timeout: 9000 });
-  ok(true, 'counting started after the countdown');
+  await ap.waitForFunction(() => window.__push.calls.includes('start:8'), null, { timeout: 4000 });
+  ok(true, 'native countdown started immediately');
+  for (let i = 0; i < 8; i++) await ap.evaluate(() => window.__push.tick());
+  ok((await ap.textContent('#pushCount')) === '0', 'last tick is 0, still waiting for the ready signal');
+  ok((await ap.textContent('#pushPhase')).includes('Ложись'), 'still in countdown before go');
+  await ap.evaluate(() => window.__push.go());
+  ok((await ap.textContent('#pushPhase')).includes('Считаю'), 'counting starts after the ready signal');
+  ok((await ap.textContent('#pushCount')) === '0', 'counter is 0 at go');
   ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'still locked after counting starts');
   ok((await ap.locator('#pushUndo').boundingBox()) == null, 'buttons hidden while locked');
   // a click where the finish button will be must not end the set
@@ -105,8 +126,10 @@ try {
   await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'));
   ok((await ap.textContent('#pushMsg')).includes('20'), 'set of 20 recorded: ' + (await ap.textContent('#pushMsg')));
   // second set of 12
-  await ap.click('#pushStart'); await ap.waitForFunction(() => window.__push.calls.filter((c) => c === 'start').length === 2, null, { timeout: 9000 });
+  await ap.click('#pushStart'); await ap.waitForFunction(() => window.__push.calls.filter((c) => String(c).startsWith('start')).length === 2, null, { timeout: 4000 });
   ok(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked')), 'next set starts locked');
+  ok((await ap.textContent('#pushCount')) === '8', 'second set also starts with an 8 s countdown');
+  await ap.evaluate(() => { for (let i = 0; i < 8; i++) window.__push.tick(); window.__push.go(); });
   await ap.evaluate(() => window.__push.unlock());
   for (let i = 0; i < 12; i++) await ap.evaluate(() => window.__push.rep());
   const fb2 = await ap.locator('#pushFinish').boundingBox();
@@ -131,7 +154,7 @@ try {
   ok(!(await ap.isVisible('#pushOverlay')) && /запись тренировки/.test(await ap.textContent('#pushMsg')), 'refused while a workout is recorded');
   await ap.evaluate(() => window.__push.setRecording(false));
   // activity killed mid-set and picked up again: the set is open and UNLOCKED, never relocked
-  await ap.evaluate(() => { window.__push.nativeActive = true; window.__push.liveReps = 7; window.__push.guard = 'unlocked'; });
+  await ap.evaluate(() => { window.__push.nativeActive = true; window.__push.counting = true; window.__push.liveReps = 7; window.__push.guard = 'unlocked'; });
   ok(await ap.evaluate(() => FTPush._rejoin()), 'rejoin after a cold start');
   ok(await ap.isVisible('#pushOverlay') && (await ap.textContent('#pushCount')) === '7', 'restored set shows the saved count');
   ok(!(await ap.evaluate(() => document.getElementById('pushOverlay').classList.contains('locked'))), 'restored set is NOT locked');
@@ -146,7 +169,7 @@ try {
   await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'), null, { timeout: 4000 });
   ok(true, 'overlay closes itself when the native set is gone');
   // the power button ends the set and saves it (event with the set)
-  await ap.evaluate(() => { window.__push.nativeActive = true; window.__push.liveReps = 5; window.__push.guard = 'locked'; });
+  await ap.evaluate(() => { window.__push.nativeActive = true; window.__push.counting = true; window.__push.liveReps = 5; window.__push.guard = 'locked'; });
   ok(await ap.evaluate(() => FTPush._rejoin()), 'set picked up again');
   await ap.evaluate(() => { window.__push.nativeActive = false; window.__push.guard = 'off'; window.__push.finished({ id: 'pu-screenoff-1', t: Date.now(), reps: 5, duration_s: 6 }, 'screen-off'); });
   await ap.waitForFunction(() => document.querySelector('#pushOverlay').classList.contains('hidden'));
