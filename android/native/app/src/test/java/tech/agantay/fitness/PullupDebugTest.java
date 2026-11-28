@@ -13,7 +13,7 @@ public class PullupDebugTest {
         Random r;
         if (w.equals("slow")) {
             r = new Random(17); tr.hold(2); tr.hangOnBar(); tr.hold(1);
-            for (int i = 0; i < 6; i++) { tr.move(0.42, 2.2); tr.hold(0.8); tr.move(-0.42, 2.5); tr.hold(1.0); }
+            for (int i = 0; i < 6; i++) { tr.move(0.42, 2.2); tr.hold(0.3); tr.move(-0.42, 2.5); tr.hold(0.4); }
             tr.stepDown(); tr.hold(12);
             PullupCounterTest.run(tr, "neck", r, 1.0, -1, -1, null, null);
         } else if (w.equals("letgo")) {

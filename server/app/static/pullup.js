@@ -18,7 +18,7 @@
   const hm = (t) => new Date(t).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
   const dur = (s) => { s = Math.round(s || 0); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
   const plural = (n, a, b, c) => { const x = Math.abs(n) % 100, y = x % 10; return x >= 11 && x <= 14 ? c : y === 1 ? a : y >= 2 && y <= 4 ? b : c; };
-  const REASON = { landed: 'закрыт сам: спрыгнул', idle: 'закрыт сам: 8 с без повторов', empty: 'закрыт сам: повторов не было', limit: 'закрыт сам: 10 минут', button: 'закрыт кнопкой в уведомлении', recovered: 'восстановлен после закрытия приложения' };
+  const REASON = { landed: 'закрыт сам: спрыгнул', idle: 'закрыт сам: 6 с без повторов', empty: 'закрыт сам: повторов не было', limit: 'закрыт сам: 10 минут', button: 'закрыт кнопкой в уведомлении', recovered: 'восстановлен после закрытия приложения' };
 
   // ---------- the day board ----------
   function pullExercise() { return Store.exercises().find((e) => e.id === 'pullups'); }
@@ -72,7 +72,7 @@
     $('pullPhase').textContent = cd > 0 ? 'Убери телефон в карман или повесь на шею и повисни на перекладине' : 'Считаю';
     const el = $('pullCount'); el.textContent = cd > 0 ? cd : (st.reps || 0); el.classList.toggle('wait', cd > 0);
     $('pullHint').textContent = cd > 0 ? 'Старт после сигнала. Экран можно выключить кнопкой питания.'
-      : (st.sensorOk === false ? 'Нет данных акселерометра…' : 'Повисишь 8 секунд без повторов — подход закроется сам. Можно и кнопкой.');
+      : (st.sensorOk === false ? 'Нет данных акселерометра…' : 'Повисишь 6 секунд без повторов — подход закроется сам. Можно и кнопкой.');
   }
   function listen(name, cb) {
     try { const r = WR.addListener(name, cb); if (r && typeof r.then === 'function') r.then(null, () => {}); return true; } catch (e) { return false; }

@@ -25,7 +25,7 @@ public class PullupSweepTest {
                 fp += PullupCounterTest.run(tr, mount, r, 1.0, 2.0, 58.0, null, null).reps();
                 // slow reps
                 r = new Random(900 + seed); tr = new PullupCounterTest.Trace(); tr.hold(2); tr.hangOnBar(); tr.hold(1);
-                for (int i = 0; i < 6; i++) { tr.move(0.42, 2.0 + 0.3 * r.nextDouble()); tr.hold(0.6); tr.move(-0.42, 2.3 + 0.3 * r.nextDouble()); tr.hold(0.8); }
+                for (int i = 0; i < 6; i++) { tr.move(0.42, 2.0 + 0.3 * r.nextDouble()); tr.hold(0.3); tr.move(-0.42, 2.3 + 0.3 * r.nextDouble()); tr.hold(0.4); }
                 tr.stepDown(); tr.hold(12);
                 int e = Math.abs(PullupCounterTest.run(tr, mount, r, 1.0, -1, -1, null, null).reps() - 6); err += e; worst = Math.max(worst, e);
                 if (e > 0 && fails != null) fails.append(mount + " slow seed=" + seed + "; ");

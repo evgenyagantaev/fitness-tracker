@@ -187,8 +187,10 @@
   const listeners = [];
   const Sync = {
     state: 'idle', error: null, timer: null, running: null,
+    pulled: false, _retries: 0,
     on(fn) { listeners.push(fn); },
     emit() { listeners.forEach((fn) => { try { fn(this); } catch (e) { console.error(e); } }); },
+    // 800 ms debounce after a board/workout write; 0 = now (visibility, online, rev poll)
     schedule(delay) { clearTimeout(this.timer); this.timer = setTimeout(() => this.run(), delay == null ? 800 : delay); },
     async run() {
       if (this.running) return this.running;
@@ -212,7 +214,8 @@
       }
       this.state = 'syncing'; this.emit();
       try {
-        const res = await api('api/sync', { method: 'POST', body: { since: Store.rev(), records, workouts } });
+        const prevRev = Store.rev();
+        const res = await api('api/sync', { method: 'POST', body: { since: prevRev, records, workouts } });
         const now = Store.days();
         const stillDirty = new Set(Store.dirty());
         const sent = new Map(records.map((r) => [r.date, r.updated_at]));
@@ -250,10 +253,20 @@
         save(K.days, now); save(K.dirty, [...stillDirty]); save(K.rev, res.rev);
         if (Array.isArray(res.exercises) && res.exercises.length) Store.setExercises(res.exercises);
         save(K.lastSync, Date.now());
-        this.state = 'ok'; this.error = null;
+        this.pulled = (res.rev !== prevRev)
+          || (res.records && res.records.length > 0)
+          || (res.workouts && res.workouts.length > 0);
+        this.state = 'ok'; this.error = null; this._retries = 0;
         if (more) this.schedule(50);
       } catch (e) {
+        this.pulled = false;
         this.state = 'error'; this.error = e;
+        // retry network errors; auth / missing server URL need a user action
+        const code = e && e.code;
+        if (code !== 'auth' && code !== 'noserver' && code !== 'notoken') {
+          this._retries = (this._retries || 0) + 1;
+          this.schedule(Math.min(30000, 2000 * this._retries));
+        }
       }
       this.emit();
       return this.state;

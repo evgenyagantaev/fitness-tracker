@@ -7,8 +7,16 @@ ALL = range(5)
 
 def test_health_is_public(client):
     r = TestClient(client.app).get("/api/health")
-    assert r.status_code == 200 and r.json()["ok"]
+    assert r.status_code == 200 and r.json()["ok"] and isinstance(r.json()["rev"], int)
 
+
+def test_health_rev_bumps_after_sync(client):
+    raw = TestClient(client.app)
+    r0 = raw.get("/api/health").json()["rev"]
+    r = client.post("/api/sync", json={"since": 0, "records": [rec("2027-01-15", pull={0})]})
+    assert r.status_code == 200
+    r1 = raw.get("/api/health").json()["rev"]
+    assert r1 > r0
 
 def test_auth_required(client):
     raw = TestClient(client.app)

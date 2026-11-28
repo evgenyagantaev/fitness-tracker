@@ -86,7 +86,7 @@ try {
   await ap.screenshot({ path: shotPath('pull-app-counter.png') });
   await ap.evaluate(() => window.__pull.idle());
   await ap.waitForFunction(() => document.querySelector('#pullOverlay').classList.contains('hidden'));
-  ok((await ap.textContent('#pullMsg')).includes('8 с без повторов'), 'auto-closed set recorded: ' + (await ap.textContent('#pullMsg')));
+  ok((await ap.textContent('#pullMsg')).includes('6 с без повторов'), 'auto-closed set recorded: ' + (await ap.textContent('#pullMsg')));
   const cells = await ap.evaluate(() => FT.Store.view(FT.localDate()).sets.pullups.cells);
   ok(cells.length >= 1 && cells[0].reps === 8 && cells[0].src === 'auto', 'board pull-up row got an auto cell: ' + JSON.stringify(cells));
   await ap.waitForFunction(async () => (await fetch(JSON.parse(localStorage.getItem('ft.config')).serverUrl + 'api/pullups', { headers: { Authorization: 'Bearer pull-test-token' } }).then((r) => r.json())).items.length === 1, null, { timeout: 10000 });

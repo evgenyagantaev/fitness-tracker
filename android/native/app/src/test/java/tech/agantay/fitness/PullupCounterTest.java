@@ -106,7 +106,7 @@ public class PullupCounterTest {
         tr.pullups(n, r, 0.38, 0.55, slowing);
         tr.hold(2.0);          // hang still at the bottom so the zero-velocity update settles
         tr.stepDown();
-        tr.hold(20);           // stand / walk away (idle close is 8 s)
+        tr.hold(20);           // stand / walk away (idle close is 6 s)
         return tr;
     }
 
@@ -143,7 +143,7 @@ public class PullupCounterTest {
         PullupCounter c = run(tr, "pocket", r, 1.0, -1, -1, null, null);
         assertEquals(5, c.reps());
         assertEquals("idle", c.closeReason());
-        assertTrue("idle should fire about 8 s after the last rep", c.closeAt() - c.lastRepT() >= 8000 && c.closeAt() - c.lastRepT() < 8500);
+        assertTrue("idle should fire about 6 s after the last rep", c.closeAt() - c.lastRepT() >= 6000 && c.closeAt() - c.lastRepT() < 6500);
     }
 
     @Test public void walkingAfterStepDownAddsNothing() {
@@ -183,7 +183,7 @@ public class PullupCounterTest {
     @Test public void slowRepsCount() {
         Random r = new Random(17);
         Trace tr = new Trace(); tr.hold(2); tr.hangOnBar(); tr.hold(1);
-        for (int i = 0; i < 6; i++) { tr.move(0.42, 2.2); tr.hold(0.8); tr.move(-0.42, 2.5); tr.hold(1.0); }
+        for (int i = 0; i < 6; i++) { tr.move(0.42, 2.2); tr.hold(0.3); tr.move(-0.42, 2.5); tr.hold(0.4); }  // count-to-count ~5.4 s, under the 6 s idle close
         tr.stepDown(); tr.hold(12);
         // pocket: a 2.2 s rise is still counted. On the neck with a strongly swinging case such slow reps can be missed
         // (the swing is as large as the rep's own acceleration) — tune from real sets.
@@ -191,7 +191,7 @@ public class PullupCounterTest {
         assertEquals(6, c.reps());
     }
 
-    /** door-frame set: soft hang, 4 reps, soft step down, then walk — no extra rep, closes by idle at 8 s */
+    /** door-frame set: soft hang, 4 reps, soft step down, then walk — no extra rep, closes by idle at 6 s */
     @Test public void softHangStepDownAndWalkIsFour() {
         for (String mount : new String[] { "pocket", "neck" }) {
             Random r = new Random(42 + (mount.equals("neck") ? 9 : 0));
@@ -204,7 +204,7 @@ public class PullupCounterTest {
             PullupCounter c = run(tr, mount, r, 1.0, off + 1.2, off + 16, null, null);
             assertEquals(mount, 4, c.reps());
             assertEquals(mount, "idle", c.closeReason());
-            assertTrue(mount, c.closeAt() - c.lastRepT() >= 8000 && c.closeAt() - c.lastRepT() < 8500);
+            assertTrue(mount, c.closeAt() - c.lastRepT() >= 6000 && c.closeAt() - c.lastRepT() < 6500);
         }
     }
 

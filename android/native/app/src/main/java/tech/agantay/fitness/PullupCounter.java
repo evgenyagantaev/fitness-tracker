@@ -26,7 +26,7 @@ final class PullupCounter {
     static double V_FLOOR = 0.12, ADAPT = 0.30, V_CAP = 0.45;   // m/s
     static double DISP_MIN = 0.13;   // m (real rise 0.4–0.6 m, the filters keep ~70–90 % of it; a soft step down is shorter)
     static final long MIN_REP_MS = 1000;
-    static final long IDLE_CLOSE_MS = 8_000, EMPTY_CLOSE_MS = 180_000;
+    static final long IDLE_CLOSE_MS = 6_000, EMPTY_CLOSE_MS = 180_000;
 
     enum Phase { WAIT, UP, DOWN }
     static StringBuilder debug = null;   // tests only

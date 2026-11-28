@@ -96,7 +96,7 @@
     else txt = 'Синхронизировано ' + fmtTime(Store.lastSync()) + (pending ? ` · не отправлено: ${pending}` : '');
     $('syncStatus').textContent = txt;
     $('syncInfo').textContent = txt + ` · ревизия ${Store.rev()}`;
-    if (s.state === 'ok') { if (activeTab === 'today' && !document.activeElement.matches('input[type=number]')) renderToday(); }
+    if (s.state === 'ok' && s.pulled) refreshOpenViews();
     if (s.state === 'error' && s.error && s.error.code === 'auth' && !isNative) showLogin('Токен больше не действует, войди заново.');
   });
 
@@ -255,11 +255,50 @@
 
   function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+  function refreshOpenViews() {
+    try {
+      const el = document.activeElement;
+      const typing = el && el.matches && el.matches('input[type=number], input.km, input.reps, input.r');
+      if (activeTab === 'today') { if (!typing) renderToday(); }
+      else if (activeTab === 'stats' && window.FTStats) window.FTStats.refresh();
+      else if (activeTab === 'pull' && window.FTPull) window.FTPull.refresh();
+      else if (activeTab === 'push' && window.FTPush) window.FTPush.refresh();
+      else if (activeTab === 'recovery') {
+        if (window.FTRecovery) window.FTRecovery.refresh();
+        if (window.FTEcg) window.FTEcg.refresh();
+      }
+      else if (activeTab === 'weight' && window.FTScale) window.FTScale.onShow();
+    } catch (e) { console.error(e); }
+  }
+
+  /** While the tab is visible, poll the cheap public /api/health rev and sync when it moves. */
+  function watchServerRev() {
+    let timer = null;
+    const interval = (typeof window.FT_REV_POLL_MS === 'number' && window.FT_REV_POLL_MS > 0) ? window.FT_REV_POLL_MS : 3000;
+    const poll = async () => {
+      if (document.hidden) return;
+      const base = window.FT.apiBase();
+      if (!base) return;
+      if (!isNative && !Store.config().token) return;
+      try {
+        const r = await fetch(base + 'api/health', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j && typeof j.rev === 'number' && j.rev > (Store.rev() || 0)) Sync.schedule(0);
+      } catch (e) { /* next tick */ }
+    };
+    const start = () => { if (timer == null) timer = setInterval(poll, interval); poll(); };
+    const stop = () => { if (timer != null) { clearInterval(timer); timer = null; } };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else start(); });
+    start();
+  }
+
   function startApp() {
     $('app').classList.remove('hidden');
     showTab('today');
     Sync.run();
     Reminders.init();
+    watchServerRev();
   }
 
   if (!isNative && !Store.config().token) showLogin();
